@@ -2,18 +2,24 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1B4F9E">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="../shared/icon-192.png">
-<link rel="apple-touch-icon" href="../shared/icon-192.png">
-<title>SPC Superviseur</title>
-<link rel="stylesheet" href="../shared/ui.css">
+<title>SPC Pointage</title>
+<link rel="icon" href="shared/icon-192.png">
+<link rel="stylesheet" href="shared/ui.css">
 </head>
 <body>
-<div id="app"></div>
-<div id="toast" role="status" aria-live="polite"></div>
-<script src="../shared/core.js"></script>
-<script src="app.js"></script>
+<header class="top"><img src="shared/logo.png" alt="Logo SPC"><b>SPC Pointage</b></header>
+<main>
+  <div class="card"><h2>Choisissez votre application</h2>
+    <p class="sub">Ouvrez la bonne application depuis le lien d'activation que SPC vous a envoyé. Les liens ci-dessous servent à les retrouver.</p>
+    <div class="row" style="flex-direction:column;align-items:stretch">
+      <a class="btn primary big" style="text-align:center;line-height:40px" href="agent/">Agent : pointer l'arrivée et le départ</a>
+      <a class="btn big" style="text-align:center;line-height:40px" href="supervisor/">Superviseur : équipe, lieux, validations</a>
+      <a class="btn big" style="text-align:center;line-height:40px" href="central/">Central : direction et administration</a>
+    </div>
+  </div>
+  <div class="card"><h3>Installer sur Android</h3><p class="sub">Ouvrez l'application dans Chrome, puis menu ⋮ → « Ajouter à l'écran d'accueil ». Autorisez la localisation précise. L'application fonctionne ensuite même sans connexion : les pointages sont envoyés dès que le téléphone retrouve du réseau.</p></div>
+</main>
 </body>
 </html>
