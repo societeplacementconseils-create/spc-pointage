@@ -1,80 +1,43 @@
-# SPC Pointage : pointage des agents par présence sur site
+# SPC Pointage : pointage des agents par scan du code QR du lieu
 
-Système de pointage d'arrivée et de départ pour les agents SPC, fondé sur leur présence réelle sur le lieu de travail.
-Trois applications Android installables (sans boutique d'applications), interconnectées par GitHub, qui fonctionnent **avec ou sans connexion**.
+Chaque lieu de travail a son **code QR**, imprimé sur une affiche. À l'arrivée et au départ, l'agent scanne ce code avec l'application SPC Pointage sur son téléphone Android.
+Le pointage est signé et chaîné, enregistré **avec ou sans connexion**, puis envoyé au dépôt GitHub de données. Le GPS n'est plus nécessaire : si la position est disponible, elle est notée à titre d'information seulement.
 
 | Application | Pour qui | Ce qu'elle fait |
 |---|---|---|
-| `agent/` | Agents de terrain | Pointe l'arrivée et le départ. Le pointage n'est accepté que dans la zone GPS du lieu. Détecte l'arrivée automatiquement (application ouverte). |
-| `supervisor/` | Chefs d'équipe, superviseurs | Voit son équipe du jour, **enregistre un nouveau lieu avec ses coordonnées GPS sur place**, valide les pointages hors zone, saisit un pointage manuel. |
-| `central/` | Direction, opérations | Crée agents, superviseurs, lieux et plannings. Contrôle les pointages, détecte les anomalies, exporte les heures. |
+| `agent/` | Agents de terrain | Scanne le code QR du lieu (ou saisit le code de secours) pour pointer l'arrivée et le départ. Historique, état de synchronisation. |
+| `supervisor/` | Chefs d'équipe, superviseurs | Voit son équipe du jour, valide, saisit un pointage manuel pour un agent sans téléphone. |
+| `central/` | Direction, opérations | Crée agents, superviseurs, lieux et plannings. Génère et imprime les codes QR. Contrôle les pointages, détecte les anomalies, exporte les heures. |
 
 ## Comment ça marche
+1. Dans le central, **Lieux → Nouveau lieu** : le code QR est créé tout de suite. **Code QR → Imprimer l'affiche** : une affiche A4 avec le logo, le nom du lieu, le QR et un **code de secours** de 16 caractères.
+2. L'affiche est placée dans le lieu, à un endroit visible.
+3. L'agent ouvre SPC Pointage, touche **Scanner le code QR du lieu**, vise l'affiche, confirme l'arrivée (puis le départ plus tard). Si la caméra ne marche pas, il tape le **code de secours**.
+4. L'application vérifie le code **sans connexion** : le dépôt ne contient que l'**empreinte** du code (jamais le code lui-même). Elle vérifie aussi que le lieu est bien dans le planning de l'agent.
+5. Le pointage (heure, lieu, agent, mode « qr ») est signé avec la clé de l'appareil et chaîné au précédent. Il est stocké sur le téléphone puis envoyé à GitHub au retour du réseau.
+6. Le central contrôle : signature, chaîne, suppression, horloge du téléphone décalée, pointage manuel, absence, départ non pointé.
 
-1. Les trois applications sont des pages web installables (PWA), hébergées gratuitement sur **GitHub Pages**.
-2. Les données (agents, lieux, plannings, pointages) sont des fichiers JSON dans un **dépôt GitHub privé**, lus et écrits par l'API GitHub.
-3. **Hors connexion** : chaque pointage est enregistré sur le téléphone (base IndexedDB) avec sa position GPS (le GPS marche sans réseau), puis envoyé automatiquement au retour de la connexion. Les applications s'ouvrent aussi sans réseau.
-4. **Sécurité des pointages** : chaque pointage est signé (HMAC-SHA-256) avec la clé de l'appareil et chaîné au précédent. Le central détecte toute modification, toute suppression et toute signature invalide.
-5. **Zone** : le lieu est enregistré avec ses coordonnées et un rayon (100 m par défaut). Un pointage est accepté si la position est dans le rayon et la précision GPS suffisante (60 m au plus). Sinon, l'agent peut pointer « hors zone » avec un motif, et le superviseur valide ou refuse.
+## Mise en service
+Voir les étapes déjà réalisées : dépôt public `spc-pointage` (applications) avec GitHub Pages, dépôt privé `spc-pointage-data` (données), deux jetons limités à ce dépôt (Contents : lecture et écriture), puis configuration du central (dépôt + jetons), création des agents, des lieux et des plannings, envoi des liens d'activation par WhatsApp.
+Sur Android : ouvrir le lien d'activation dans Chrome, menu ⋮ → **Ajouter à l'écran d'accueil**, autoriser la **caméra** (et la localisation si souhaité).
 
-## Mise en service pas à pas (compte GitHub `societeplacementconseils-create`)
-
-### 1. Créer les deux dépôts
-Sur https://github.com/new :
-- `spc-pointage` : **public** (il contient seulement le code, aucun secret). Nécessaire pour GitHub Pages gratuit.
-- `spc-pointage-data` : **privé**. Cochez « Add a README file ».
-
-### 2. Publier les applications
-Dans `spc-pointage` : « Add file » → « Upload files », glissez tout le contenu de ce dossier (y compris le fichier caché `.nojekyll`), puis « Commit changes ».
-Ensuite : **Settings → Pages → Source : Deploy from a branch → `main` / `(root)` → Save**.
-Après une minute, les applications sont en ligne : `https://societeplacementconseils-create.github.io/spc-pointage/`
-
-### 3. Créer les deux jetons d'accès
-Sur GitHub : **Settings (votre profil) → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
-Créez deux jetons :
-- `spc-central` (pour la direction) et `spc-terrain` (pour les téléphones de terrain).
-- *Repository access* : **Only select repositories → `spc-pointage-data`** uniquement.
-- *Permissions → Repository permissions → Contents : Read and write*. Rien d'autre.
-- Expiration : 90 jours à 1 an (notez la date de renouvellement).
-Copiez chaque jeton (il n'est affiché qu'une fois).
-
-### 4. Configurer le central
-Ouvrez `https://societeplacementconseils-create.github.io/spc-pointage/central/` (ordinateur ou Android).
-Saisissez : dépôt `societeplacementconseils-create/spc-pointage-data`, branche `main`, jeton central, jeton terrain.
-**Réglages → Exporter les clés** : gardez ce fichier en lieu sûr (les clés de signature ne sont qu'ici).
-
-### 5. Créer les utilisateurs, les lieux, les plannings
-- **Agents** → « Nouvel agent ou superviseur » → le central affiche un **lien d'activation** : envoyez-le par WhatsApp à la personne (bouton fourni). Le lien contient la clé de son téléphone : ne l'envoyez qu'à elle.
-- **Lieux** : saisissez les coordonnées ou laissez le superviseur enregistrer le lieu sur place.
-- **Plannings** : agent, lieu, jours, horaires.
-
-### 6. Sur chaque téléphone Android
-Ouvrir le lien d'activation dans **Chrome** → menu ⋮ → **Ajouter à l'écran d'accueil**. Autoriser la **localisation précise**. Dans les réglages Android, activer « Date et heure automatiques » et ne pas restreindre la batterie pour Chrome.
-
-## Règles de fonctionnement
-- L'agent ne voit que ses lieux du jour. Il appuie sur « Pointer mon arrivée » : l'application mesure sa position, calcule la distance au lieu et enregistre l'heure.
-- **Arrivée automatique** : quand l'application est ouverte et que l'agent est dans la zone (2 mesures consécutives, dans la fenêtre horaire), l'arrivée est enregistrée seule. Le départ se pointe toujours à la main (l'agent peut sortir pendant sa pause).
-- Plusieurs arrivées/départs par jour sont possibles. Les heures sont calculées par le central (pause d'une heure déduite pour une journée d'un seul tenant de 6 h ou plus, réglable).
-- Le central signale : hors zone à valider, signature invalide, empreinte modifiée, chaîne interrompue, pointage manuel, heure du téléphone décalée ou différente de l'heure GPS, départ non pointé, absence, pointage supprimé.
-
-## Version Android native (détection en arrière-plan)
-Le dossier séparé `spc-pointage-android` contient l'application Android native qui affiche l'application agent et détecte l'arrivée et le départ **même application fermée** (géorepérage Android, service de courte durée, envoi automatique). Elle se compile dans le cloud par GitHub Actions (voir son README). Les pointages natifs sont signés comme les autres et vérifiés par le central (mention « Détection automatique (Android) »). Quand l'application web tourne dans la version native, le suivi continu web est désactivé pour éviter les doublons.
+## Remplacer un code QR
+Si une affiche est perdue ou photographiée : central → Lieux → Code QR → **Remplacer le code**. L'ancien code est refusé dès que les téléphones se sont synchronisés. Imprimez et posez la nouvelle affiche.
 
 ## Interconnexion avec l'application de gestion SPC
 Central → **Mois** → « Exporter pour l'application SPC » produit `spc-pointages-AAAA-MM.json`.
-Dans l'application de gestion SPC : **Réglages → Importer les pointages GPS**. Les lignes alimentent le Rapport journalier (arrivée, départ, absence, anomalies).
-Pour que la liaison fonctionne : le **code client** du lieu (ex. `CLI-2026-001`) doit correspondre au client SPC, et le **code de pointage** de l'intervenante (ex. `AGT-001`) doit être renseigné dans sa fiche.
+Dans l'application de gestion SPC : **Réglages → Importer les pointages GPS** (le nom du bouton est conservé). Le **code client** du lieu (ex. `CLI-2026-001`) et le **code de pointage** de l'intervenante (ex. `AGT-001`, dans sa fiche) doivent correspondre.
 
 ## Limites et précautions (à lire)
-- **Pas de suivi en arrière-plan dans la version web.** Une application web ne peut pas lire le GPS quand elle est fermée : l'arrivée automatique ne fonctionne que **application ouverte**. Pour la détection en arrière-plan, utilisez la version Android native (dossier `spc-pointage-android`).
-- **GPS fictif.** Un navigateur ne peut pas détecter une application de fausse localisation. Les garde-fous : précision GPS exigée, comparaison heure téléphone / heure GPS, signature, validation des cas hors zone, contrôle du superviseur.
-- **Jeton sur les téléphones.** Le jeton « terrain » est présent sur chaque téléphone activé : il donne accès au dépôt de données (privé, limité à ce seul dépôt). Si un téléphone est perdu : révoquez le jeton sur GitHub, créez-en un nouveau, ressaisissez-le dans le central et renvoyez les liens d'activation. Un agent ne peut pas forger le pointage d'un autre (il n'a pas sa clé), mais un téléphone compromis peut lire les données du dépôt.
-- **Clés de signature** : stockées uniquement dans le central. Sans elles, les signatures ne peuvent plus être vérifiées : exportez-les.
-- **Vie privée** : la position n'est enregistrée qu'au moment d'un pointage. L'application ne trace pas les déplacements. Informez les agents et mentionnez le pointage GPS dans leur contrat ou règlement intérieur.
+- **Une affiche peut être photographiée.** Quelqu'un pourrait scanner la photo du code depuis un autre endroit. Parades : placer l'affiche à l'intérieur du lieu, contrôles du superviseur, **alerte facultative « scan loin du lieu »** (central → Réglages, utile seulement si les coordonnées du lieu sont fiables), remplacement du code en cas de doute. Un code QR qui change automatiquement (affiché sur l'écran du superviseur) est possible plus tard.
+- **Lecture du QR par la caméra** : elle repose sur la fonction de lecture de codes de Chrome sur Android. Si un téléphone ne la propose pas, ou si la caméra est refusée, l'agent saisit le **code de secours** inscrit sous le QR.
+- **Jeton sur les téléphones.** Le jeton « terrain » est présent sur chaque téléphone activé : il donne accès au dépôt de données (privé, limité à ce seul dépôt). Si un téléphone est perdu : révoquez le jeton sur GitHub, créez-en un nouveau, ressaisissez-le dans le central et renvoyez les liens d'activation.
+- **Clés.** Les clés de signature des agents et la **clé maîtresse des codes QR** ne sont que dans le navigateur du central. Exportez-les (Réglages → Exporter les clés) et gardez le fichier en lieu sûr. Sans la clé maîtresse, les codes QR existants ne pourraient plus être réimprimés à l'identique : il faudrait les remplacer.
+- **Vie privée** : l'application ne trace pas les déplacements. Si la position est disponible au moment du scan, elle est notée ; informez les agents et mentionnez le pointage dans leur contrat ou règlement intérieur.
 - **Limites GitHub** : 5 000 requêtes par heure et par jeton ; largement suffisant pour des dizaines d'agents.
 
 ## Tests
-`node tests/mock-github.js 4010` lance un faux serveur GitHub ; `python3 tests/e2e.py` joue le scénario complet (central, superviseur, deux agents, coupure de connexion, falsification, pont natif simulé, pointage natif vérifié) avec Playwright : 37 contrôles. `python3 tests/native-compat.py` compare la fabrication des pointages natifs aux calculs JavaScript (46 événements).
+`node tests/mock-github.js 4010` lance un faux serveur GitHub ; `python3 tests/e2e.py` joue le scénario complet (central, superviseur, deux agents, saisie du code, scan simulé, coupure de connexion, remplacement du code, falsification) : 36 contrôles. `python3 tests/qr-check.py` vérifie que les codes QR générés se lisent (OpenCV).
 
 ## Dépôt de données
-Voir `data-template/README.md` pour la structure des fichiers.
+Voir `data-template/README.md`.

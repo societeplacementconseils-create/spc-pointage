@@ -38,7 +38,22 @@
         D = out; await db.set('kv', 'data', D);
       }
     } catch (e) { lastErr = e.code === 'auth' ? 'Jeton refusé par GitHub' : (e.message || e.code); }
+    if (cfg && navigator.onLine && D.sites.some(s => !s.qrHash)) { try { await ensureQr(); await db.set('kv', 'data', D); } catch (e) { /* réessayé au prochain chargement */ } }
     loading = false; await counts(); await verify(); render();
+  }
+
+  /* ---------- codes QR des lieux ---------- */
+  async function master() { if (!keys.__master || !keys.__master.length) { keys.__master = [SPC.newKey()]; await db.set('kv', 'keys', keys); } return keys.__master[keys.__master.length - 1]; }
+  const siteCode = async s => SPC.codeFromHex(await SPC.hmac(await master(), 'qr:' + s.id + ':' + (s.qrVersion || 1)));
+  async function ensureQr() {
+    let n = 0;
+    for (const s of D.sites) {
+      if (s.qrHash) continue;
+      s.qrVersion = s.qrVersion || 1; s.qrHash = await SPC.qrHash(s.id, await siteCode(s));
+      await SPC.queueFile(db, 'sites/' + s.id + '.json', s, 'replace'); n++;
+    }
+    if (n) { await SPC.sync(db, cfg); await counts(); }
+    return n;
   }
 
   /* ---------- vérification des signatures, des chaînes et des anomalies ---------- */
@@ -54,6 +69,7 @@
         if (!ks.length) add(e.id, 'Clé inconnue', 'warn'); else if (!ok) add(e.id, 'Signature invalide', 'bad');
       }
       if (e.zone === 'out') { const v = D.validations.find(x => x.eventId === e.id); add(e.id, v ? (v.decision === 'valide' ? 'Hors zone validé' : 'Hors zone refusé') : 'Hors zone à valider', v ? (v.decision === 'valide' ? 'ok' : 'bad') : 'warn'); }
+      if (settings().gpsAlert > 0 && e.mode === 'qr' && e.dist != null && e.dist > settings().gpsAlert) add(e.id, 'Scan à ' + e.dist + ' m du lieu', 'warn');
       if (e.drift != null && Math.abs(e.drift) > 120000) add(e.id, 'Horloge du téléphone décalée', 'warn');
       if (e.tGps && Math.abs(new Date(e.t) - new Date(e.tGps)) > 120000 && e.mode !== 'manuel') add(e.id, 'Heure ≠ heure GPS', 'warn');
       if (e.mode === 'manuel') add(e.id, 'Pointage manuel', 'warn');
@@ -70,7 +86,7 @@
   const chip = f => `<span class="chip ${f.sev}">${esc(f.k)}</span>`;
 
   /* ---------- calcul des journées ---------- */
-  const settings = () => Object.assign({ pause: 1, retard: 5 }, cfg && cfg.settings);
+  const settings = () => Object.assign({ pause: 1, retard: 5, gpsAlert: 0 }, cfg && cfg.settings);
   function dayRows(date) {
     const rows = [], used = new Set();
     for (const a of SPC.activeOn(D.assignments, date)) {
@@ -108,7 +124,7 @@
     return `<div class="row" style="margin-bottom:10px"><label class="f grow" style="margin:0">Jour<input type="date" id="day" value="${day}"></label><button data-act="reload">Actualiser</button></div>
       <div class="kpi"><div><b>${rows.length}</b><span class="sub">Lignes du jour</span></div><div><b>${pres}</b><span class="sub">Agents pointés</span></div><div><b>${rows.filter(r => r.state.startsWith('Absent')).length}</b><span class="sub">Absents</span></div><div><b>${alerts}</b><span class="sub">Alertes graves (toutes dates)</span></div></div>
       ${D.deleted.length ? `<div class="banner bad"><b>${D.deleted.length} pointage(s) déjà vus ont disparu du dépôt.</b> Vérifiez l'historique des modifications sur GitHub.</div>` : ''}
-      <div class="card scroll"><table><thead><tr><th>Agent</th><th>Lieu</th><th>Prévu</th><th>Arrivée</th><th>Départ</th><th>Heures</th><th>Retard</th><th>Distance</th><th>État</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(agentName(r.agentId))}</td><td>${esc(site(r.siteId).nom || r.siteId)}${r.a ? '' : ' <span class="chip warn">hors planning</span>'}</td><td>${r.a ? esc((r.a.debut || '') + ' à ' + (r.a.fin || '')) : '-'}</td><td>${r.first ? hm(r.first.t) : '-'}</td><td>${r.lastOut ? hm(r.lastOut.t) : '-'}</td><td>${r.evs.length ? h1(r.hours) : '-'}</td><td>${r.retard > settings().retard ? r.retard + ' min' : '-'}</td><td>${r.first && r.first.dist != null ? r.first.dist + ' m' : '-'}</td><td>${stChip(r)} ${r.flags.map(chip).join(' ')}</td></tr>`).join('') || '<tr><td colspan="9" class="sub">Aucune affectation ni pointage ce jour.</td></tr>'}</tbody></table></div>`;
+      <div class="card scroll"><table><thead><tr><th>Agent</th><th>Lieu</th><th>Prévu</th><th>Arrivée</th><th>Départ</th><th>Heures</th><th>Retard</th><th>Distance (info)</th><th>État</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(agentName(r.agentId))}</td><td>${esc(site(r.siteId).nom || r.siteId)}${r.a ? '' : ' <span class="chip warn">hors planning</span>'}</td><td>${r.a ? esc((r.a.debut || '') + ' à ' + (r.a.fin || '')) : '-'}</td><td>${r.first ? hm(r.first.t) : '-'}</td><td>${r.lastOut ? hm(r.lastOut.t) : '-'}</td><td>${r.evs.length ? h1(r.hours) : '-'}</td><td>${r.retard > settings().retard ? r.retard + ' min' : '-'}</td><td>${r.first && r.first.dist != null ? r.first.dist + ' m' : '-'}</td><td>${stChip(r)} ${r.flags.map(chip).join(' ')}</td></tr>`).join('') || '<tr><td colspan="9" class="sub">Aucune affectation ni pointage ce jour.</td></tr>'}</tbody></table></div>`;
   }
   function monthStats(m) {
     const [Y, M] = m.split('-').map(Number), nd = new Date(Y, M, 0).getDate(), per = {}, entries = [];
@@ -138,8 +154,8 @@
         <div class="row" style="margin-top:8px"><button data-act="link" data-id="${a.id}">Lien d'activation</button><button data-act="rekey" data-id="${a.id}">Nouvelle clé</button><button data-act="toggleagent" data-id="${a.id}">${a.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun agent.</p></div>'}`;
   }
   function sitesView() {
-    return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newsite">Nouveau lieu</button></div>
-      ${D.sites.map(s => `<div class="card"><div class="row"><h3 class="grow">${esc(s.nom)}</h3>${s.actif === false ? '<span class="chip bad">inactif</span>' : ''}</div><div class="sub">${esc(s.adresse || '')} · client ${esc(s.clientRef || '-')}</div><div class="sub">Zone ${s.rayon} m · ${s.lat}, ${s.lon} (±${s.acc || '?'} m)</div><div class="row" style="margin-top:8px"><a class="btn" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=${s.lat}&mlon=${s.lon}#map=18/${s.lat}/${s.lon}">Carte</a><button data-act="editsite" data-id="${s.id}">Modifier</button><button data-act="togglesite" data-id="${s.id}">${s.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun lieu. Les superviseurs peuvent aussi les enregistrer sur place.</p></div>'}`;
+    return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newsite">Nouveau lieu</button><button data-act="posterall">Imprimer tous les codes</button></div>
+      ${D.sites.map(s => `<div class="card"><div class="row"><h3 class="grow">${esc(s.nom)}</h3>${s.qrHash ? '<span class="chip ok">QR actif</span>' : '<span class="chip warn">QR en préparation</span>'}${s.actif === false ? '<span class="chip bad">inactif</span>' : ''}</div><div class="sub">${esc(s.adresse || '')} · client ${esc(s.clientRef || '-')}</div><div class="sub">${s.lat != null && s.lat !== '' ? 'Coordonnées : ' + s.lat + ', ' + s.lon + ' (information)' : 'Coordonnées non renseignées (facultatif)'}</div><div class="row" style="margin-top:8px"><button class="primary" data-act="qr" data-id="${s.id}">Code QR</button>${s.lat != null && s.lat !== '' ? `<a class="btn" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=${s.lat}&mlon=${s.lon}#map=18/${s.lat}/${s.lon}">Carte</a>` : ''}<button data-act="editsite" data-id="${s.id}">Modifier</button><button data-act="togglesite" data-id="${s.id}">${s.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun lieu. Créez un lieu : son code QR est généré tout de suite.</p></div>'}`;
   }
   function assignView() {
     return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newasg">Nouvelle affectation</button></div>
@@ -149,7 +165,7 @@
     return `<div class="card"><h2>Connexion au dépôt de données</h2><p class="sub">${cfg ? esc(cfg.repo) + ' · branche ' + esc(cfg.branch) : ''}</p>
       <p class="sub">Dernière synchronisation : ${lastSync ? new Date(lastSync).toLocaleString('fr-FR') : 'jamais'}${pending ? ` · ${pending} modification(s) à envoyer` : ''}${lastErr ? ' · ' + esc(lastErr) : ''}</p>
       <div class="row"><button class="primary" data-act="reload">Synchroniser</button><button data-act="config">Modifier la connexion</button></div></div>
-      <div class="card"><h3>Règles de calcul</h3><label class="f">Pause quotidienne déduite (heures, journée d'un seul tenant de 6 h ou plus)<input id="set_pause" type="number" step="0.5" min="0" value="${settings().pause}"></label><label class="f">Tolérance de retard (minutes)<input id="set_retard" type="number" min="0" value="${settings().retard}"></label><button data-act="saveset">Enregistrer</button></div>
+      <div class="card"><h3>Règles de calcul</h3><label class="f">Pause quotidienne déduite (heures, journée d'un seul tenant de 6 h ou plus)<input id="set_pause" type="number" step="0.5" min="0" value="${settings().pause}"></label><label class="f">Tolérance de retard (minutes)<input id="set_retard" type="number" min="0" value="${settings().retard}"></label><label class="f">Alerte si le scan est à plus de ... mètres du lieu (0 = désactivée, utile seulement si les coordonnées du lieu sont fiables)<input id="set_gps" type="number" min="0" value="${settings().gpsAlert}"></label><button data-act="saveset">Enregistrer</button></div>
       <div class="card"><h3>Sauvegarde des clés de signature</h3><p class="sub">Les clés ne sont stockées que sur cet appareil (jamais sur GitHub). Sans elles, les signatures des pointages ne peuvent plus être vérifiées. Exportez-les et gardez le fichier en lieu sûr.</p><div class="row"><button data-act="exportkeys">Exporter les clés</button><label class="btn">Importer des clés<input type="file" id="keyfile" accept=".json" style="display:none"></label></div></div>`;
   }
   function setupView() {
@@ -191,16 +207,38 @@
     keys[a.id] = [SPC.newKey()]; await db.set('kv', 'keys', keys); D.agents.push(a); closeModal(); await write('agents/' + a.id + '.json', a, 'create'); toast('Utilisateur créé : envoyez-lui son lien d\'activation'); showLink(a);
   }
   function siteForm(s) {
-    modal(`<h3>${s ? 'Modifier le lieu' : 'Nouveau lieu'}</h3><label class="f">Nom<input id="s_nom" value="${esc(s ? s.nom : '')}"></label><label class="f">Adresse et repères<input id="s_adr" value="${esc(s ? s.adresse || '' : '')}"></label><label class="f">Référence client SPC (ex. CLI-2026-001)<input id="s_cli" value="${esc(s ? s.clientRef || '' : '')}"></label>
-      <div class="row"><label class="f grow">Latitude<input id="s_lat" type="number" step="any" value="${s ? s.lat : ''}"></label><label class="f grow">Longitude<input id="s_lon" type="number" step="any" value="${s ? s.lon : ''}"></label></div>
-      <label class="f">Rayon de la zone (mètres)<input id="s_ray" type="number" min="20" step="10" value="${s ? s.rayon : 100}"></label><label class="f">Superviseur responsable<select id="s_sup"><option value="">Aucun</option>${D.agents.filter(a => a.role === 'superviseur').map(a => `<option value="${a.id}"${s && s.superviseurId === a.id ? ' selected' : ''}>${esc(a.nom)}</option>`).join('')}</select></label>
+    modal(`<h3>${s ? 'Modifier le lieu' : 'Nouveau lieu'}</h3><label class="f">Nom du lieu (client)<input id="s_nom" value="${esc(s ? s.nom : '')}"></label><label class="f">Adresse et repères<input id="s_adr" value="${esc(s ? s.adresse || '' : '')}"></label><label class="f">Référence client SPC (ex. CLI-2026-001)<input id="s_cli" value="${esc(s ? s.clientRef || '' : '')}"></label>
+      <p class="sub">Coordonnées GPS : facultatives, à titre d'information. Le pointage se fait par le code QR du lieu.</p>
+      <div class="row"><label class="f grow">Latitude<input id="s_lat" type="number" step="any" value="${s && s.lat != null ? s.lat : ''}"></label><label class="f grow">Longitude<input id="s_lon" type="number" step="any" value="${s && s.lon != null ? s.lon : ''}"></label></div>
+      <label class="f">Superviseur responsable<select id="s_sup"><option value="">Aucun</option>${D.agents.filter(a => a.role === 'superviseur').map(a => `<option value="${a.id}"${s && s.superviseurId === a.id ? ' selected' : ''}>${esc(a.nom)}</option>`).join('')}</select></label>
       <div class="row"><button class="primary grow" data-act="savesite" data-id="${s ? s.id : ''}">Enregistrer</button><button data-act="close">Annuler</button></div>`);
   }
   async function saveSite(id) {
-    const nom = $('#s_nom').value.trim(), lat = parseFloat($('#s_lat').value), lon = parseFloat($('#s_lon').value), rayon = +$('#s_ray').value;
-    if (!nom || isNaN(lat) || isNaN(lon) || !(rayon >= 20)) return toast('Nom, coordonnées et rayon (20 m minimum) sont obligatoires');
-    const old = D.sites.find(s => s.id === id), s = Object.assign({ actif: true, createdAt: new Date().toISOString() }, old || {}, { id: id || 'S-' + SPC.uid().slice(0, 8), nom, adresse: $('#s_adr').value.trim(), clientRef: $('#s_cli').value.trim(), lat, lon, rayon, superviseurId: $('#s_sup').value, updatedAt: new Date().toISOString() });
+    const nom = $('#s_nom').value.trim(), la = $('#s_lat').value.trim(), lo = $('#s_lon').value.trim();
+    if (!nom) return toast('Le nom du lieu est obligatoire');
+    if ((la === '') !== (lo === '') || (la !== '' && (isNaN(+la) || isNaN(+lo)))) return toast('Renseignez la latitude et la longitude ensemble, ou aucune des deux');
+    const old = D.sites.find(s => s.id === id);
+    const s = Object.assign({ actif: true, createdAt: new Date().toISOString(), qrVersion: 1 }, old || {}, { id: id || 'S-' + SPC.uid().slice(0, 8), nom, adresse: $('#s_adr').value.trim(), clientRef: $('#s_cli').value.trim(), lat: la === '' ? null : +la, lon: lo === '' ? null : +lo, superviseurId: $('#s_sup').value, updatedAt: new Date().toISOString() });
+    if (!s.qrHash) s.qrHash = await SPC.qrHash(s.id, await siteCode(s));
     D.sites = D.sites.filter(x => x.id !== s.id).concat(s); closeModal(); await write('sites/' + s.id + '.json', s, old ? 'replace' : 'create');
+    if (!old) { toast('Lieu créé : imprimez son code QR'); showQr(s); }
+  }
+  async function showQr(s) {
+    const code = await siteCode(s), text = SPC.qrText(s.id, code);
+    modal(`<h3>Code QR : ${esc(s.nom)}</h3><div style="text-align:center;max-width:260px;margin:auto">${SPCQR.svg(text)}</div><p style="text-align:center;font-size:20px"><b>${SPC.fmtCode(code)}</b></p>
+      <p class="sub">Code de secours à taper si la caméra ne fonctionne pas. Imprimez l'affiche et placez-la à un endroit visible du lieu.</p><input type="hidden" id="qrtext" value="${esc(text)}">
+      <div class="row"><button class="primary grow" data-act="poster" data-id="${s.id}">Imprimer l'affiche</button><button class="grow danger" data-act="regen" data-id="${s.id}">Remplacer le code</button></div><button data-act="close" style="width:100%;margin-top:8px">Fermer</button>`);
+  }
+  async function posterHtml(s) {
+    const code = await siteCode(s), text = SPC.qrText(s.id, code);
+    return `<section class="poster"><img class="plogo" src="../shared/logo.png" alt="SPC"><h1>POINTAGE DES AGENTS</h1><h2>${esc(s.nom)}</h2><div class="pqr">${SPCQR.svg(text)}</div><p class="pstep"><b>À l'arrivée et au départ :</b><br>ouvrez l'application <b>SPC Pointage</b>, touchez <b>« Scanner le code QR du lieu »</b> et visez ce code.</p><p class="pcode">Code de secours : <b>${SPC.fmtCode(code)}</b></p><p class="pfoot">${esc(s.adresse || '')}<br>SPC - Service de Placement et de Conseils · +224 628 142 188 · info@spc-guinee.com</p></section>`;
+  }
+  async function showPoster(list) {
+    const html = (await Promise.all(list.map(posterHtml))).join('');
+    let v = document.getElementById('posterView');
+    if (!v) { v = document.createElement('div'); v.id = 'posterView'; document.body.appendChild(v); }
+    v.innerHTML = `<div class="pbar"><b>Affiche${list.length > 1 ? 's' : ''} de pointage</b><button class="primary" data-act="print">Imprimer</button><button data-act="closeposter">Fermer</button></div><div class="psheets">${html}</div>`;
+    v.classList.add('on'); closeModal();
   }
   function asgForm(a) {
     const ag = D.agents.filter(x => x.role === 'agent' && x.actif !== false);
@@ -239,7 +277,7 @@
         cfg = { repo, branch: $('#c_branch').value.trim() || 'main', token, deviceToken: dt, apiBase: $('#c_api').value.trim(), settings: { pause: 1, retard: 5 } }; await db.set('kv', 'cfg', cfg); render(); load(); break;
       }
       case 'config': if (confirm('Modifier la connexion ? Les clés de signature sont conservées.')) { const old = cfg; cfg = null; render(); $('#c_repo').value = old.repo; $('#c_branch').value = old.branch; $('#c_api').value = old.apiBase || ''; } break;
-      case 'saveset': cfg.settings = { pause: +$('#set_pause').value || 0, retard: +$('#set_retard').value || 0 }; await db.set('kv', 'cfg', cfg); render(); toast('Règles enregistrées'); break;
+      case 'saveset': cfg.settings = { pause: +$('#set_pause').value || 0, retard: +$('#set_retard').value || 0, gpsAlert: +$('#set_gps').value || 0 }; await verify(); await db.set('kv', 'cfg', cfg); render(); toast('Règles enregistrées'); break;
       case 'newagent': agentForm(); break;
       case 'saveagent': saveAgent(); break;
       case 'link': showLink(D.agents.find(a => a.id === d.id)); break;
@@ -249,6 +287,12 @@
       case 'newsite': siteForm(null); break;
       case 'editsite': siteForm(D.sites.find(s => s.id === d.id)); break;
       case 'savesite': saveSite(d.id); break;
+      case 'qr': await showQr(D.sites.find(s => s.id === d.id)); break;
+      case 'poster': showPoster([D.sites.find(s => s.id === d.id)]); break;
+      case 'posterall': { const l = D.sites.filter(s => s.actif !== false && s.qrHash); if (!l.length) toast('Aucun lieu avec un code QR actif'); else showPoster(l); break; }
+      case 'print': window.print(); break;
+      case 'closeposter': document.getElementById('posterView').classList.remove('on'); break;
+      case 'regen': if (confirm("Remplacer le code QR de ce lieu ? Les affiches déjà imprimées ne fonctionneront plus : il faudra imprimer et poser la nouvelle.")) { const s = D.sites.find(x => x.id === d.id); s.qrVersion = (s.qrVersion || 1) + 1; s.qrHash = await SPC.qrHash(s.id, await siteCode(s)); await write('sites/' + s.id + '.json', s, 'replace'); await showQr(s); } break;
       case 'togglesite': { const s = D.sites.find(x => x.id === d.id); s.actif = s.actif === false; write('sites/' + s.id + '.json', s, 'replace'); break; }
       case 'newasg': if (!D.agents.length || !D.sites.length) toast("Créez d'abord au moins un agent et un lieu"); else asgForm(null); break;
       case 'editasg': asgForm(D.assignments.find(a => a.id === d.id)); break;

@@ -26,3 +26,10 @@ nav.tabs button{flex:1;border:0;border-radius:0;background:transparent;min-heigh
 #modal.on{display:flex}#modal .sheet{background:var(--card);width:100%;max-width:520px;border-radius:18px 18px 0 0;padding:18px;max-height:92vh;overflow:auto;padding-bottom:calc(18px + env(safe-area-inset-bottom))}
 .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:12px}.kpi div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}.kpi b{display:block;font-size:24px}
 .dist{font-size:28px;font-weight:800}
+
+#posterView{display:none;position:fixed;inset:0;background:var(--bg);z-index:40;overflow:auto}#posterView.on{display:block}
+.pbar{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0}.pbar b{flex:1}
+.poster{background:#fff;color:#14284B;text-align:center;max-width:620px;margin:16px auto;padding:30px 26px;border-radius:8px;box-shadow:0 2px 14px rgba(0,0,0,.18)}
+.poster .plogo{height:72px}.poster h1{font-size:30px;margin:12px 0 0;color:#1B4F9E}.poster h2{font-size:24px;margin:6px 0 14px}
+.pqr svg{width:min(380px,82%);height:auto}.pstep{font-size:20px}.pcode{font-size:24px;margin:8px 0}.pfoot{font-size:13px;color:#53637C}
+@media print{body>*:not(#posterView){display:none!important}#posterView{position:static;display:block;background:#fff;overflow:visible}.pbar{display:none}.poster{page-break-after:always;box-shadow:none;margin:0 auto;max-width:none}@page{margin:14mm}}

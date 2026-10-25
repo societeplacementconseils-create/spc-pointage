@@ -1,6 +1,6 @@
 /* Service worker : l'application s'ouvre et fonctionne sans connexion */
-const V='spc-central-v1';
-const ASSETS=['./','./index.html','./app.js','./manifest.webmanifest','../shared/core.js','../shared/ui.css','../shared/icon-192.png','../shared/icon-512.png','../shared/logo.png'];
+const V='spc-central-v2';
+const ASSETS=['./','./index.html','./app.js','./manifest.webmanifest','../shared/core.js','../shared/qr.js','../shared/ui.css','../shared/icon-192.png','../shared/icon-512.png','../shared/logo.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',e=>{

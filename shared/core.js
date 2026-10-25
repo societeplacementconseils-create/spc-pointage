@@ -206,6 +206,22 @@
     return { sent, left: (await db.keys('outbox')).length, err };
   };
 
+  /* ---------- code QR du lieu : code secret dérivé, empreinte vérifiable hors connexion ---------- */
+  const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  SPC.codeFromHex = hex => { let bits = ''; for (let i = 0; i < 20; i += 2) bits += parseInt(hex.slice(i, i + 2), 16).toString(2).padStart(8, '0'); let s = ''; for (let i = 0; i < 80; i += 5) s += B32[parseInt(bits.slice(i, i + 5), 2)]; return s; };
+  SPC.fmtCode = c => c.match(/.{4}/g).join('-');
+  SPC.normCode = s => String(s || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+  SPC.qrHash = (siteId, code) => SPC.sha256('SPC-QR:' + siteId + ':' + SPC.normCode(code));
+  SPC.qrText = (siteId, code) => 'SPC1|' + siteId + '|' + SPC.fmtCode(SPC.normCode(code));
+  SPC.qrParse = t => { const m = String(t || '').trim().match(/^SPC1\|([^|\s]+)\|([0-9A-Za-z-]+)$/); return m ? { siteId: m[1], code: SPC.normCode(m[2]) } : null; };
+  SPC.qrCheck = async (site, code) => !!(site && site.qrHash) && (await SPC.qrHash(site.id, code)) === site.qrHash;
+  /** Position facultative, prise rapidement : le pointage par QR n'en dépend pas. */
+  SPC.quickPos = (ms = 3500) => new Promise(res => {
+    if (!navigator.geolocation) return res(null);
+    let done = false; const fin = v => { if (!done) { done = true; clearTimeout(tm); res(v); } }; const tm = setTimeout(() => fin(null), ms + 500);
+    navigator.geolocation.getCurrentPosition(p => fin(toPos(p)), () => fin(null), { enableHighAccuracy: false, maximumAge: 120000, timeout: ms });
+  });
+
   /* ---------- règles de zone ---------- */
   SPC.zone = (site, pos) => {
     const d = SPC.dist(pos.lat, pos.lon, site.lat, site.lon), maxAcc = site.precisionMax || 60;
