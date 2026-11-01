@@ -38,12 +38,13 @@
         D = out; await db.set('kv', 'data', D);
       }
     } catch (e) { lastErr = e.code === 'auth' ? 'Jeton refusé par GitHub' : (e.message || e.code); }
-    if (cfg && navigator.onLine && D.sites.some(s => !s.qrHash)) { try { await ensureQr(); await db.set('kv', 'data', D); } catch (e) { /* réessayé au prochain chargement */ } }
+    if (cfg && navigator.onLine && (D.sites.some(s => !s.qrHash) || D.agents.some(a => !a.badgeHash))) { try { await ensureQr(); await db.set('kv', 'data', D); } catch (e) { /* réessayé au prochain chargement */ } }
     loading = false; await counts(); await verify(); render();
   }
 
   /* ---------- codes QR des lieux ---------- */
   async function master() { if (!keys.__master || !keys.__master.length) { keys.__master = [SPC.newKey()]; await db.set('kv', 'keys', keys); } return keys.__master[keys.__master.length - 1]; }
+  const agentCode = async a => SPC.codeFromHex(await SPC.hmac(await master(), 'badge:' + a.id + ':' + (a.badgeVersion || 1)));
   const siteCode = async s => SPC.codeFromHex(await SPC.hmac(await master(), 'qr:' + s.id + ':' + (s.qrVersion || 1)));
   async function ensureQr() {
     let n = 0;
@@ -51,6 +52,11 @@
       if (s.qrHash) continue;
       s.qrVersion = s.qrVersion || 1; s.qrHash = await SPC.qrHash(s.id, await siteCode(s));
       await SPC.queueFile(db, 'sites/' + s.id + '.json', s, 'replace'); n++;
+    }
+    for (const a of D.agents) {
+      if (a.badgeHash) continue;
+      a.badgeVersion = a.badgeVersion || 1; a.badgeHash = await SPC.badgeHash(a.id, await agentCode(a));
+      await SPC.queueFile(db, 'agents/' + a.id + '.json', a, 'replace'); n++;
     }
     if (n) { await SPC.sync(db, cfg); await counts(); }
     return n;
@@ -73,6 +79,7 @@
       if (e.drift != null && Math.abs(e.drift) > 120000) add(e.id, 'Horloge du téléphone décalée', 'warn');
       if (e.tGps && Math.abs(new Date(e.t) - new Date(e.tGps)) > 120000 && e.mode !== 'manuel') add(e.id, 'Heure ≠ heure GPS', 'warn');
       if (e.mode === 'manuel') add(e.id, 'Pointage manuel', 'warn');
+      if (e.mode === 'badge') add(e.id, 'Badge scanné par ' + (e.signerId || '?'), 'ok');
       if (e.src === 'native' && e.mode === 'auto') add(e.id, 'Détection automatique (Android)', 'ok');
       (bySigner[e.signerId + '|' + (e.src || '')] = bySigner[e.signerId + '|' + (e.src || '')] || []).push(e);
     }
@@ -149,9 +156,9 @@
       <p class="sub">L'export « application SPC » se charge dans l'application de gestion (Rapport journalier) : une ligne par agent, lieu et jour.</p>`;
   }
   function agentsView() {
-    return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newagent">Nouvel agent ou superviseur</button></div>
+    return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newagent">Nouvel agent ou superviseur</button><button data-act="badgeall">Imprimer tous les badges</button></div>
       ${D.agents.map(a => `<div class="card"><div class="row"><h3 class="grow">${esc(a.nom)}</h3><span class="chip">${a.role === 'superviseur' ? 'Superviseur' : 'Agent'}</span>${a.actif === false ? '<span class="chip bad">inactif</span>' : ''}</div><div class="sub">${esc(a.id)} · ${esc(a.tel || '')}${keys[a.id] ? '' : ' · <b>clé absente sur cet appareil</b>'}</div>
-        <div class="row" style="margin-top:8px"><button data-act="link" data-id="${a.id}">Lien d'activation</button><button data-act="rekey" data-id="${a.id}">Nouvelle clé</button><button data-act="toggleagent" data-id="${a.id}">${a.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun agent.</p></div>'}`;
+        <div class="row" style="margin-top:8px"><button data-act="link" data-id="${a.id}">Lien d'activation</button>${a.role === 'agent' ? `<button data-act="badge" data-id="${a.id}">Badge</button>` : ''}<button data-act="rekey" data-id="${a.id}">Nouvelle clé</button><button data-act="toggleagent" data-id="${a.id}">${a.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun agent.</p></div>'}`;
   }
   function sitesView() {
     return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newsite">Nouveau lieu</button><button data-act="posterall">Imprimer tous les codes</button></div>
@@ -203,8 +210,8 @@
   }
   async function saveAgent() {
     const nom = $('#a_nom').value.trim(); if (!nom) return toast('Indiquez le nom');
-    const role = $('#a_role').value, a = { id: nextId(D.agents, role === 'superviseur' ? 'SUP' : 'AGT'), nom, tel: $('#a_tel').value.trim(), role, actif: true, createdAt: new Date().toISOString() };
-    keys[a.id] = [SPC.newKey()]; await db.set('kv', 'keys', keys); D.agents.push(a); closeModal(); await write('agents/' + a.id + '.json', a, 'create'); toast('Utilisateur créé : envoyez-lui son lien d\'activation'); showLink(a);
+    const role = $('#a_role').value, a = { id: nextId(D.agents, role === 'superviseur' ? 'SUP' : 'AGT'), nom, tel: $('#a_tel').value.trim(), role, actif: true, createdAt: new Date().toISOString(), badgeVersion: 1 };
+    keys[a.id] = [SPC.newKey()]; await db.set('kv', 'keys', keys); a.badgeHash = await SPC.badgeHash(a.id, await agentCode(a)); D.agents.push(a); closeModal(); await write('agents/' + a.id + '.json', a, 'create'); toast('Utilisateur créé : envoyez-lui son lien d\'activation'); showLink(a);
   }
   function siteForm(s) {
     modal(`<h3>${s ? 'Modifier le lieu' : 'Nouveau lieu'}</h3><label class="f">Nom du lieu (client)<input id="s_nom" value="${esc(s ? s.nom : '')}"></label><label class="f">Adresse et repères<input id="s_adr" value="${esc(s ? s.adresse || '' : '')}"></label><label class="f">Référence client SPC (ex. CLI-2026-001)<input id="s_cli" value="${esc(s ? s.clientRef || '' : '')}"></label>
@@ -228,6 +235,23 @@
     modal(`<h3>Code QR : ${esc(s.nom)}</h3><div style="text-align:center;max-width:260px;margin:auto">${SPCQR.svg(text)}</div><p style="text-align:center;font-size:20px"><b>${SPC.fmtCode(code)}</b></p>
       <p class="sub">Code de secours à taper si la caméra ne fonctionne pas. Imprimez l'affiche et placez-la à un endroit visible du lieu.</p><input type="hidden" id="qrtext" value="${esc(text)}">
       <div class="row"><button class="primary grow" data-act="poster" data-id="${s.id}">Imprimer l'affiche</button><button class="grow danger" data-act="regen" data-id="${s.id}">Remplacer le code</button></div><button data-act="close" style="width:100%;margin-top:8px">Fermer</button>`);
+  }
+  async function badgeHtml(a) {
+    const code = await agentCode(a), text = SPC.badgeText(a.id, code);
+    return `<div class="badge"><div class="bhead"><img src="../shared/logo.png" alt="SPC"><span>BADGE DE POINTAGE</span></div><div class="bbody"><div class="bqr">${SPCQR.svg(text)}</div><div class="binfo"><b class="bname">${esc(a.nom)}</b><span>${esc(a.id)}</span><span class="bcode">${SPC.fmtCode(code)}</span></div></div></div>`;
+  }
+  async function showBadge(a) {
+    const code = await agentCode(a), text = SPC.badgeText(a.id, code);
+    modal(`<h3>Badge de ${esc(a.nom)}</h3><div style="max-width:420px;margin:auto">${await badgeHtml(a)}</div><input type="hidden" id="badgetext" value="${esc(text)}">
+      <p class="sub">Le chef d'équipe scanne ce code avec l'application SPC Superviseur pour pointer l'agent. Imprimez le badge et plastifiez-le.</p>
+      <div class="row"><button class="primary grow" data-act="badgeprint" data-id="${a.id}">Imprimer le badge</button><button class="grow danger" data-act="badgeregen" data-id="${a.id}">Remplacer le badge</button></div><button data-act="close" style="width:100%;margin-top:8px">Fermer</button>`);
+  }
+  async function showBadges(list) {
+    const html = (await Promise.all(list.map(badgeHtml))).join('');
+    let v = document.getElementById('posterView');
+    if (!v) { v = document.createElement('div'); v.id = 'posterView'; document.body.appendChild(v); }
+    v.innerHTML = `<div class="pbar"><b>Badge${list.length > 1 ? 's' : ''} de pointage</b><button class="primary" data-act="print">Imprimer</button><button data-act="closeposter">Fermer</button></div><div class="bsheet">${html}</div>`;
+    v.classList.add('on'); closeModal();
   }
   async function posterHtml(s) {
     const code = await siteCode(s), text = SPC.qrText(s.id, code);
@@ -287,6 +311,10 @@
       case 'newsite': siteForm(null); break;
       case 'editsite': siteForm(D.sites.find(s => s.id === d.id)); break;
       case 'savesite': saveSite(d.id); break;
+      case 'badge': await showBadge(D.agents.find(a => a.id === d.id)); break;
+      case 'badgeprint': showBadges([D.agents.find(a => a.id === d.id)]); break;
+      case 'badgeall': { const l = D.agents.filter(a => a.role === 'agent' && a.actif !== false && a.badgeHash); if (!l.length) toast('Aucun agent avec un badge actif'); else showBadges(l); break; }
+      case 'badgeregen': if (confirm("Remplacer ce badge ? L'ancien badge sera refusé dès que les téléphones se seront synchronisés.")) { const a = D.agents.find(x => x.id === d.id); a.badgeVersion = (a.badgeVersion || 1) + 1; a.badgeHash = await SPC.badgeHash(a.id, await agentCode(a)); await write('agents/' + a.id + '.json', a, 'replace'); await showBadge(a); } break;
       case 'qr': await showQr(D.sites.find(s => s.id === d.id)); break;
       case 'poster': showPoster([D.sites.find(s => s.id === d.id)]); break;
       case 'posterall': { const l = D.sites.filter(s => s.actif !== false && s.qrHash); if (!l.length) toast('Aucun lieu avec un code QR actif'); else showPoster(l); break; }

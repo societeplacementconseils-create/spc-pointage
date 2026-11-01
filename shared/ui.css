@@ -33,3 +33,10 @@ nav.tabs button{flex:1;border:0;border-radius:0;background:transparent;min-heigh
 .poster .plogo{height:72px}.poster h1{font-size:30px;margin:12px 0 0;color:#1B4F9E}.poster h2{font-size:24px;margin:6px 0 14px}
 .pqr svg{width:min(380px,82%);height:auto}.pstep{font-size:20px}.pcode{font-size:24px;margin:8px 0}.pfoot{font-size:13px;color:#53637C}
 @media print{body>*:not(#posterView){display:none!important}#posterView{position:static;display:block;background:#fff;overflow:visible}.pbar{display:none}.poster{page-break-after:always;box-shadow:none;margin:0 auto;max-width:none}@page{margin:14mm}}
+
+.badge{width:85.6mm;height:54mm;background:#fff;color:#14284B;border:1px solid #C5D2E6;border-radius:3.5mm;padding:3mm;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}
+.badge .bhead{display:flex;align-items:center;justify-content:space-between;border-bottom:.6mm solid #1B4F9E;padding-bottom:1.5mm}.badge .bhead img{height:10mm}.badge .bhead span{font-weight:700;font-size:3.2mm;color:#1B4F9E}
+.badge .bbody{display:flex;gap:3mm;align-items:center;flex:1;padding-top:1.5mm}.badge .bqr svg{width:30mm;height:30mm;display:block}.badge .binfo{display:flex;flex-direction:column;gap:1.5mm;min-width:0}
+.badge .bname{font-size:4.2mm;line-height:1.15}.badge .binfo span{font-size:3.3mm;color:#53637C}.badge .bcode{font-weight:700;color:#14284B!important;font-size:3mm!important}
+.bsheet{display:grid;grid-template-columns:repeat(2,85.6mm);gap:4mm;justify-content:center;padding:12px}
+@media print{.bsheet{padding:0;gap:3mm;justify-content:start}.badge{page-break-inside:avoid;border:.2mm solid #999}}

@@ -215,6 +215,11 @@
   SPC.qrText = (siteId, code) => 'SPC1|' + siteId + '|' + SPC.fmtCode(SPC.normCode(code));
   SPC.qrParse = t => { const m = String(t || '').trim().match(/^SPC1\|([^|\s]+)\|([0-9A-Za-z-]+)$/); return m ? { siteId: m[1], code: SPC.normCode(m[2]) } : null; };
   SPC.qrCheck = async (site, code) => !!(site && site.qrHash) && (await SPC.qrHash(site.id, code)) === site.qrHash;
+  /* ---------- badge personnel de l'agent (code QR scanné par le chef d'équipe) ---------- */
+  SPC.badgeHash = (agentId, code) => SPC.sha256('SPC-BADGE:' + agentId + ':' + SPC.normCode(code));
+  SPC.badgeText = (agentId, code) => 'SPC1B|' + agentId + '|' + SPC.fmtCode(SPC.normCode(code));
+  SPC.badgeParse = t => { const m = String(t || '').trim().match(/^SPC1B\|([^|\s]+)\|([0-9A-Za-z-]+)$/); return m ? { agentId: m[1], code: SPC.normCode(m[2]) } : null; };
+  SPC.badgeCheck = async (agent, code) => !!(agent && agent.badgeHash) && (await SPC.badgeHash(agent.id, code)) === agent.badgeHash;
   /** Position facultative, prise rapidement : le pointage par QR n'en dépend pas. */
   SPC.quickPos = (ms = 3500) => new Promise(res => {
     if (!navigator.geolocation) return res(null);

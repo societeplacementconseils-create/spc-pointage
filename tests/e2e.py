@@ -14,7 +14,7 @@ procs=[subprocess.Popen(['node',ROOT+'/tests/mock-github.js','4010'],stdout=subp
 time.sleep(1.2); errs=[]; OK=[]
 def check(label,cond,extra=''):
     OK.append((label,bool(cond))); print(('  [OK] ' if cond else '  [ÉCHEC] ')+label+(' '+str(extra) if extra and not cond else ''))
-SCAN_MOCK="""(()=>{window.BarcodeDetector=class{constructor(o){}async detect(){return window.__qr?[{rawValue:window.__qr}]:[]}};})()"""
+SCAN_MOCK="""(()=>{window.BarcodeDetector=class{constructor(o){}async detect(){const q=window.__qrq;if(q&&q.length)return [{rawValue:q.shift()}];return window.__qr?[{rawValue:window.__qr}]:[]}};})()"""
 try:
   with sync_playwright() as p:
     b=p.chromium.launch(args=['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream'])
@@ -47,6 +47,21 @@ try:
         for i in range(6,8): cp.check(f'.g_j[value="{i}"]')
         cp.fill('#g_deb','00:00'); cp.fill('#g_fin','23:59'); cp.click('[data-act=saveasg]'); cp.wait_for_timeout(500)
     d=dump(); check('agents, lieu et affectations écrits dans le dépôt',len([k for k in d if k.startswith('agents/')])==3 and len([k for k in d if k.startswith('assignments/')])==2)
+    cp.click('[data-act=tab][data-tab=agents]'); cp.wait_for_timeout(300)
+    BT={}
+    for nom,key in [('Fanta Camara','F'),('Aminata Bah','A')]:
+        cp.locator('.card',has_text=nom).locator('[data-act=badge]').click(); cp.wait_for_timeout(500)
+        BT[key]=cp.evaluate("document.getElementById('badgetext').value")
+        if key=='F':
+            cp.locator('.badge .bqr svg').first.screenshot(path='/tmp/badge-qr.png'); img=cv2.imread('/tmp/badge-qr.png'); img=cv2.resize(img,None,fx=3,fy=3,interpolation=cv2.INTER_NEAREST)
+            val,_,_=cv2.QRCodeDetector().detectAndDecode(img); check('le QR du badge est lisible par un lecteur externe et contient le bon texte',val==BT['F'],val)
+            check('le badge affiche le nom, l\'identifiant et le code de secours','Fanta Camara' in cp.inner_text('#modal') and 'AGT-001' in cp.inner_text('#modal'))
+        cp.click('[data-act=close]')
+    check('badges des agents au format SPC1B|identifiant|code',all(re.match(r'^SPC1B\|AGT-00[12]\|([0-9A-Z]{4}-){3}[0-9A-Z]{4}$',v) for v in BT.values()),BT)
+    CODE_BF=BT['F'].split('|')[2]; check("l'empreinte du badge (et non son code) est dans le dépôt",json.loads(dump()['agents/AGT-001.json']).get('badgeHash') and CODE_BF not in json.dumps(dump()))
+    cp.click('[data-act=badgeall]'); cp.wait_for_timeout(600); check("l'impression de tous les badges produit une planche avec un badge par agent",cp.locator('#posterView.on .badge').count()==2); 
+    if os.environ.get('SHOTS'): cp.set_viewport_size({'width':900,'height':500}); cp.wait_for_timeout(300); cp.screenshot(path='/tmp/shot_badgesheet.png'); cp.set_viewport_size({'width':420,'height':860})
+    cp.click('[data-act=closeposter]')
     # lieu ancien sans code QR (créé avant la nouveauté) : le central le complète
     post('set',{'path':'sites/S-ancien.json','content':json.dumps({'id':'S-ancien','nom':'Ancien lieu','actif':True,'lat':9.6,'lon':-13.6,'rayon':100})})
     cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000)
@@ -81,15 +96,35 @@ try:
     e2=json.loads(dump().get(dayfile('AGT-002'),'[]')); check('pointage QR possible sans aucune position GPS (la position reste vide)',len(e2)==1 and e2[0]['lat'] is None and e2[0]['mode']=='qr',e2)
     # ---------- Superviseur ----------
     print('4. Superviseur : équipe, lieux en lecture seule, pointage manuel')
-    sc,sp=ctx(None); sp.goto(links['Mamadou Sylla']); sp.wait_for_timeout(2000); body=sp.inner_text('body'); check("équipe du jour visible",'Fanta Camara' in body and 'Aminata Bah' in body,body[:200])
+    sc,sp=ctx(None,scan=True); sp.goto(links['Mamadou Sylla']); sp.wait_for_timeout(2000); body=sp.inner_text('body'); check("équipe du jour visible",'Fanta Camara' in body and 'Aminata Bah' in body,body[:200])
     sp.click('[data-act=tab][data-tab=sites]'); sp.wait_for_timeout(200); t=sp.inner_text('body'); check("la liste des lieux est en lecture seule (pas de création de lieu)",'Résidence Test' in t and 'QR actif' in t and 'Enregistrer un nouveau lieu' not in t)
     sp.click('[data-act=tab][data-tab=manual]'); sp.select_option('#m_agent',label='Aminata Bah'); sp.select_option('#m_site',label='Résidence Test'); sp.select_option('#m_type','OUT'); sp.fill('#m_why','Téléphone en panne'); sp.click('[data-act=manual]'); sp.wait_for_timeout(2800)
     e2=json.loads(dump().get(dayfile('AGT-002'),'[]')); check('pointage manuel signé par le superviseur',any(e['mode']=='manuel' and e['signerId']=='SUP-001' and e['agentId']=='AGT-002' for e in e2),e2)
+    # ---------- Superviseur : pointage par badges ----------
+    print('4b. Superviseur : pointage d\'un groupe par badges')
+    sp.click('[data-act=tab][data-tab=badges]'); sp.wait_for_timeout(300); tb=sp.inner_text('body'); check("l'écran Badges liste l'appel du jour",'Pointage par badges' in tb and 'Appel du jour' in tb and 'Fanta Camara' in tb and 'Aminata Bah' in tb)
+    wrong='SPC1B|AGT-002|AAAA-BBBB-CCCC-DDDD'
+    sp.evaluate("q=>window.__qrq=q",[BT['F'],BT['A'],BT['F'],'SPC1B|AGT-009|AAAA-BBBB-CCCC-DDDD',wrong,'SPC1|S-xyz|AAAA-BBBB-CCCC-DDDD'])
+    sp.click('[data-act=bscan]'); sp.wait_for_timeout(4500); feed=sp.inner_text('#bfeed')
+    if os.environ.get('SHOTS'): sp.screenshot(path='/tmp/shot_badges.png')
+    check("les badges du groupe sont scannés l'un après l'autre (2 agents pointés)",'Fanta Camara :' in feed and 'Aminata Bah :' in feed,feed)
+    check('badge inconnu, badge falsifié et code qui n\'est pas un badge sont refusés','Badge inconnu' in feed and 'invalide' in feed and "pas un badge" in feed,feed)
+    sp.click('[data-act=bstop]'); sp.wait_for_timeout(3000)
+    def badge_events(agent): return [e for e in json.loads(dump().get(dayfile(agent),'[]')) if e['mode']=='badge']
+    bf,ba=badge_events('AGT-001'),badge_events('AGT-002')
+    check("un pointage par badge est signé par le chef d'équipe, mode « badge » ; le second scan du même badge est ignoré",len(bf)==1 and len(ba)==1 and bf[0]['signerId']=='SUP-001' and bf[0]['agentId']=='AGT-001' and bf[0]['zone']=='badge' and bf[0]['sig'],(bf,ba))
+    sc.set_offline(True); sp.wait_for_timeout(300)
+    sp.click('[data-act=bmanual]'); sp.fill('#bcode',CODE_BF.lower()); sp.click('[data-act=bcode]'); sp.wait_for_timeout(1500)
+    check('pointage par code de badge saisi, hors connexion : mis en attente','à envoyer' in sp.inner_text('header'),sp.inner_text('header'))
+    sc.set_offline(False); sp.wait_for_timeout(300); sp.evaluate("window.dispatchEvent(new Event('online'))"); sp.wait_for_timeout(3000)
+    check('le pointage par badge hors connexion arrive au retour du réseau',len(badge_events('AGT-001'))==2)
+    ap.click('[data-act=tab][data-tab=set]'); ap.click('[data-act=sync]'); ap.wait_for_timeout(2800); ap.click('[data-act=tab][data-tab=hist]'); ap.wait_for_timeout(400)
+    check("l'agent voit sur son téléphone les pointages faits par badge (historique)",'badge' in ap.inner_text('body'),ap.inner_text('body')[:300]); ap.click('[data-act=tab][data-tab=today]')
     # ---------- Central : contrôle ----------
     print('5. Contrôle par le central')
     cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000); t=cp.inner_text('body')
     check('journée affichée avec les deux agents',('Fanta Camara' in t) and ('Aminata Bah' in t),t[:300])
-    check('pointage manuel signalé','Pointage manuel' in t); check('aucune signature invalide sur les données saines','Signature invalide' not in t and 'Empreinte modifiée' not in t)
+    check('pointage manuel signalé','Pointage manuel' in t); check('pointages par badge signalés avec le chef d\'équipe','Badge scanné par SUP-001' in t); check('aucune signature invalide sur les données saines','Signature invalide' not in t and 'Empreinte modifiée' not in t)
     if os.environ.get('SHOTS'): cp.set_viewport_size({'width':1100,'height':800}); cp.wait_for_timeout(300); cp.screenshot(path='/tmp/shot_central.png'); cp.set_viewport_size({'width':420,'height':860})
     cp.click('[data-act=tab][data-tab=set]'); cp.fill('#set_gps','200'); cp.click('[data-act=saveset]'); cp.wait_for_timeout(300); cp.click('[data-act=tab][data-tab=day]'); cp.wait_for_timeout(300)
     check("l'alerte facultative « scan loin du lieu » signale le scan à ~330 m",re.search(r'Scan à \d{3} m du lieu',cp.inner_text('body')) is not None)
@@ -100,6 +135,10 @@ try:
     ap.click('[data-act=tab][data-tab=set]'); ap.click('[data-act=sync]'); ap.wait_for_timeout(2800); ap.click('[data-act=tab][data-tab=today]'); ap.wait_for_timeout(300)
     ap.evaluate("v=>window.__qr=v",QR); ap.click('[data-act=scan]'); ap.wait_for_timeout(1800); t=ap.inner_text('#modal'); check("l'ancien code QR est refusé après le remplacement",'invalide' in t,t[:100]); ap.evaluate("window.__qr=null"); ap.click('[data-act=close]')
     ap.evaluate("v=>window.__qr=v",QR2); ap.click('[data-act=scan]'); ap.wait_for_timeout(1800); t=ap.inner_text('#modal'); check('le nouveau code QR est accepté','Résidence Test' in t and 'Confirmer' in t,t[:100]); ap.evaluate("window.__qr=null"); ap.click('[data-act=close]')
+    cp.click('[data-act=tab][data-tab=agents]'); cp.locator('.card',has_text='Fanta Camara').locator('[data-act=badge]').click(); cp.wait_for_timeout(500); cp.once('dialog',lambda d:d.accept()); cp.click('[data-act=badgeregen]'); cp.wait_for_timeout(2800)
+    BF2=cp.evaluate("document.getElementById('badgetext').value"); check('le remplacement du badge produit un nouveau code',BF2!=BT['F'] and BF2.startswith('SPC1B|AGT-001|'),BF2); cp.click('[data-act=close]')
+    sp.click('[data-act=tab][data-tab=set]'); sp.click('[data-act=sync]'); sp.wait_for_timeout(3000); sp.click('[data-act=tab][data-tab=badges]'); sp.click('[data-act=bmanual]'); sp.fill('#bcode',CODE_BF); sp.click('[data-act=bcode]'); sp.wait_for_timeout(600)
+    check("l'ancien badge est refusé après son remplacement","Aucun badge ne correspond" in sp.inner_text('body'),sp.inner_text('body')[-200:]); sp.click('[data-act=bstop]')
     # falsification et suppression
     day=dayfile('AGT-001'); raw=json.loads(dump()[day]); raw[0]['t']=raw[0]['t'].replace('T','T0',1) if False else raw[0]['t']; raw[0]['dist']=raw[0]['dist']+7; post('set',{'path':day,'content':json.dumps(raw)})
     cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(2500); check('modification d\'un pointage détectée','Empreinte modifiée' in cp.inner_text('body'))

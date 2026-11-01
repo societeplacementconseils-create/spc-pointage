@@ -3,7 +3,7 @@
 Ce dépôt est rempli automatiquement par les applications. Ne modifiez pas les fichiers à la main.
 
 ```
-agents/<ID>.json                       utilisateurs (nom, rôle, actif) : jamais de clé secrète ici
+agents/<ID>.json                       utilisateurs (nom, rôle, actif) et empreinte du badge (badgeHash) : jamais de clé secrète ici
 sites/<ID>.json                        lieux : nom, adresse, client, superviseur, empreinte du code QR (qrHash) et sa version ; coordonnées GPS facultatives (information)
 assignments/<ID>.json                  affectations : agent, lieu, jours, horaires, période
 pointages/AAAA-MM/AAAA-MM-JJ/<agent>.json   événements d'arrivée et de départ, signés et chaînés

@@ -5,7 +5,7 @@
   const $ = s => document.querySelector(s);
   const db = SPC.db('spc-agent');
   let cfg = null, data = { sites: [], assignments: [] }, tab = 'today', busy = false, stream = null, scanning = false;
-  let pending = 0, lastSync = '', syncing = false, installEv = null, authError = false, lastErr = '';
+  let pending = 0, lastSync = '', syncing = false, installEv = null, authError = false, lastErr = '', remoteEv = [];
 
   /* ---------- démarrage ---------- */
   async function boot() {
@@ -15,6 +15,7 @@
     cfg = await db.get('kv', 'cfg');
     data = (await db.get('kv', 'data')) || data;
     SPC.clockOffset = (await db.get('kv', 'offset')) ?? null;
+    remoteEv = (await db.get('kv', 'remoteEv')) || [];
     await refreshCounts(); render();
     if (cfg) refresh();
     addEventListener('online', () => refresh()); addEventListener('offline', render);
@@ -39,12 +40,16 @@
         const [sites, asg] = await Promise.all([SPC.pullDir(db, gh, 'sites'), SPC.pullDir(db, gh, 'assignments')]);
         data = { sites: sites || data.sites, assignments: asg || data.assignments }; await db.set('kv', 'data', data);
         const r = await SPC.sync(db, cfg); if (r.err) lastErr = r.err; authError = r.err === 'auth';
+        // pointages enregistrés pour moi par le chef d'équipe (badges) : visibles aussi sur mon téléphone
+        const rem = []; for (let i = 0; i < 2; i++) { const dt = new Date(); dt.setDate(dt.getDate() - i); const f = await gh.get(SPC.dayPath(cfg.id, SPC.localDate(dt))); if (f && Array.isArray(f.json)) rem.push(...f.json); }
+        remoteEv = rem; await db.set('kv', 'remoteEv', remoteEv);
       }
     } catch (e) { lastErr = e.code || e.message; authError = e.code === 'auth'; }
     syncing = false; await refreshCounts(); render();
   }
   const todayList = () => SPC.activeOn(data.assignments.filter(a => a.agentId === cfg.id), SPC.localDate()).map(a => ({ a, site: data.sites.find(s => s.id === a.siteId) })).filter(x => x.site && x.site.actif !== false);
-  const eventsOf = async (siteId, date) => (await db.all('events')).filter(e => e.agentId === cfg.id && e.date === (date || SPC.localDate()) && (!siteId || e.siteId === siteId)).sort((a, b) => a.t < b.t ? -1 : 1);
+  const allEvents = async () => { const loc = await db.all('events'), ids = new Set(loc.map(e => e.id)); return loc.concat(remoteEv.filter(e => !ids.has(e.id)).map(e => Object.assign({}, e, { synced: true, remote: true }))); };
+  const eventsOf = async (siteId, date) => (await allEvents()).filter(e => e.agentId === cfg.id && e.date === (date || SPC.localDate()) && (!siteId || e.siteId === siteId)).sort((a, b) => a.t < b.t ? -1 : 1);
 
   /* ---------- scan du code QR ---------- */
   function stopCamera() { scanning = false; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } }
@@ -134,9 +139,9 @@
       ${cards.join('') || '<div class="card"><h3>Aucun lieu prévu aujourd\'hui</h3><p class="sub">Si vous devez travailler aujourd\'hui, contactez votre superviseur.</p></div>'}`;
   }
   async function historyView() {
-    const evs = (await db.all('events')).filter(e => e.agentId === cfg.id).sort((a, b) => a.t < b.t ? 1 : -1).slice(0, 60);
+    const evs = (await allEvents()).filter(e => e.agentId === cfg.id).sort((a, b) => a.t < b.t ? 1 : -1).slice(0, 60);
     const name = id => (data.sites.find(s => s.id === id) || {}).nom || id;
-    return `<div class="card"><h2>Mes pointages</h2>${evs.length ? `<div class="scroll"><table><thead><tr><th>Date</th><th>Heure</th><th></th><th>Lieu</th><th>État</th></tr></thead><tbody>${evs.map(e => `<tr><td>${esc(e.date)}</td><td>${hm(e.t)}</td><td>${e.type === 'IN' ? 'Arrivée' : 'Départ'}</td><td>${esc(name(e.siteId))}${e.mode === 'qr' ? ' <span class="chip">QR</span>' : ''}${e.mode === 'manuel' ? ' <span class="chip warn">manuel</span>' : ''}</td><td>${e.synced ? '<span class="chip ok">envoyé</span>' : '<span class="chip warn">en attente</span>'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="sub">Aucun pointage sur cet appareil.</p>'}</div>`;
+    return `<div class="card"><h2>Mes pointages</h2>${evs.length ? `<div class="scroll"><table><thead><tr><th>Date</th><th>Heure</th><th></th><th>Lieu</th><th>État</th></tr></thead><tbody>${evs.map(e => `<tr><td>${esc(e.date)}</td><td>${hm(e.t)}</td><td>${e.type === 'IN' ? 'Arrivée' : 'Départ'}</td><td>${esc(name(e.siteId))}${e.mode === 'qr' ? ' <span class="chip">QR</span>' : ''}${e.mode === 'manuel' ? ' <span class="chip warn">manuel</span>' : ''}${e.mode === 'badge' ? ' <span class="chip">badge</span>' : ''}</td><td>${e.synced ? '<span class="chip ok">envoyé</span>' : '<span class="chip warn">en attente</span>'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="sub">Aucun pointage sur cet appareil.</p>'}</div>`;
   }
   function settingsView() {
     return `<div class="card"><h2>Mon appareil</h2><p>${esc(cfg.nom)} <span class="sub">(${esc(cfg.id)})</span></p><p class="sub">Dernière synchronisation : ${lastSync ? new Date(lastSync).toLocaleString('fr-FR') : 'jamais'}${lastErr ? ' · dernier message : ' + esc(lastErr) : ''}</p>
