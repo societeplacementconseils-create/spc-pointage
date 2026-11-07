@@ -125,6 +125,19 @@ try:
     cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000); t=cp.inner_text('body')
     check('journée affichée avec les deux agents',('Fanta Camara' in t) and ('Aminata Bah' in t),t[:300])
     check('pointage manuel signalé','Pointage manuel' in t); check('pointages par badge signalés avec le chef d\'équipe','Badge scanné par SUP-001' in t); check('aucune signature invalide sur les données saines','Signature invalide' not in t and 'Empreinte modifiée' not in t)
+    # ---------- Renvoi vers l'application de gestion : fichier vérifié publié par le central ----------
+    print("5b. Publication automatique vers l'application de gestion")
+    d=dump(); exk=[k for k in d if k.startswith('exports/')]
+    check('le central publie automatiquement exports/pointages-AAAA-MM.json dans le dépôt de données',exk==['exports/pointages-'+MONTH+'.json'],exk)
+    pub=json.loads(d[exk[0]]) if exk else {}
+    check('le fichier publié est au format spc-pointages v2 avec le mode de chaque pointage (qr, badge, manuel)',pub.get('format')=='spc-pointages' and pub.get('version')==2 and pub.get('mois')==MONTH and any('qr' in e.get('modes',[]) for e in pub.get('entrees',[])) and any('badge' in e.get('modes',[]) for e in pub.get('entrees',[])) and any('manuel' in e.get('modes',[]) for e in pub.get('entrees',[])),json.dumps(pub)[:300])
+    check("le fichier contient le code client du lieu, l'agent, les heures d'arrivée et de départ",all(e.get('clientRef')=='CLI-2026-001' and e.get('agentCode') and e.get('agentNom') for e in pub.get('entrees',[])) and any(e.get('arr') for e in pub.get('entrees',[])))
+    json.dump(pub,open('/tmp/published-export.json','w'))
+    cp.click('[data-act=tab][data-tab=month]'); cp.wait_for_timeout(500); t2=cp.inner_text('body')
+    check("l'onglet Mois indique la dernière publication et propose « Publier maintenant »",'Publié' in t2 and 'Publier maintenant' in t2,t2[-300:])
+    before=json.loads(dump()['exports/pointages-'+MONTH+'.json'])['genere']; cp.click('[data-act=publish]'); cp.wait_for_timeout(2500)
+    after=json.loads(dump()['exports/pointages-'+MONTH+'.json'])['genere']; check('« Publier maintenant » réécrit le fichier dans le dépôt',after!=before)
+    cp.click('[data-act=tab][data-tab=day]')
     if os.environ.get('SHOTS'): cp.set_viewport_size({'width':1100,'height':800}); cp.wait_for_timeout(300); cp.screenshot(path='/tmp/shot_central.png'); cp.set_viewport_size({'width':420,'height':860})
     cp.click('[data-act=tab][data-tab=set]'); cp.fill('#set_gps','200'); cp.click('[data-act=saveset]'); cp.wait_for_timeout(300); cp.click('[data-act=tab][data-tab=day]'); cp.wait_for_timeout(300)
     check("l'alerte facultative « scan loin du lieu » signale le scan à ~330 m",re.search(r'Scan à \d{3} m du lieu',cp.inner_text('body')) is not None)

@@ -4,7 +4,7 @@
   const { esc, toast, modal, closeModal, fdate, hm } = SPC;
   const $ = s => document.querySelector(s);
   const db = SPC.db('spc-central');
-  let cfg = null, keys = {}, D = emptyD(), tab = 'day', day = SPC.localDate(), month = SPC.localDate().slice(0, 7), loading = false, lastErr = '', pending = 0, lastSync = '', V = null;
+  let cfg = null, keys = {}, D = emptyD(), tab = 'day', day = SPC.localDate(), month = SPC.localDate().slice(0, 7), loading = false, lastErr = '', pending = 0, lastSync = '', V = null, pubInfo = null;
   function emptyD() { return { agents: [], sites: [], assignments: [], validations: [], events: [], deleted: [] }; }
 
   /* ---------- démarrage ---------- */
@@ -14,7 +14,7 @@
     await counts(); await verify(); render(); if (cfg) load();
     addEventListener('online', () => load()); addEventListener('offline', render);
   }
-  async function counts() { pending = (await db.keys('outbox')).length; lastSync = (await db.get('kv', 'lastSync')) || ''; }
+  async function counts() { pending = (await db.keys('outbox')).length; lastSync = (await db.get('kv', 'lastSync')) || ''; pubInfo = (await db.get('kv', 'pub:' + month)) || null; }
 
   /* ---------- chargement du dépôt (arbre Git + cache par empreinte) ---------- */
   async function load() {
@@ -40,6 +40,7 @@
     } catch (e) { lastErr = e.code === 'auth' ? 'Jeton refusé par GitHub' : (e.message || e.code); }
     if (cfg && navigator.onLine && (D.sites.some(s => !s.qrHash) || D.agents.some(a => !a.badgeHash))) { try { await ensureQr(); await db.set('kv', 'data', D); } catch (e) { /* réessayé au prochain chargement */ } }
     loading = false; await counts(); await verify(); render();
+    if (cfg && navigator.onLine) autoPublish().then(async () => { await counts(); render(); }).catch(() => {});
   }
 
   /* ---------- codes QR des lieux ---------- */
@@ -144,16 +145,40 @@
         p.alertes += r.flags.filter(f => f.sev !== 'ok').length;
         const s = site(r.siteId);
         if (!r.evs.length && !r.state.startsWith('Absent')) continue;
-        entries.push({ date, agentCode: r.agentId, agentNom: agentName(r.agentId), siteId: r.siteId, siteNom: s.nom || '', clientRef: s.clientRef || '', arr: r.first ? hm(r.first.t) : '', dep: r.lastOut ? hm(r.lastOut.t) : '', heures: Math.round(r.hours * 100) / 100, retardMin: r.retard, absent: !r.evs.length && r.state.startsWith('Absent'), etat: r.state, alertes: r.flags.filter(f => f.sev !== 'ok').map(f => f.k), eventIds: r.evs.map(e => e.id) });
+        entries.push({ date, agentCode: r.agentId, agentNom: agentName(r.agentId), siteId: r.siteId, siteNom: s.nom || '', clientRef: s.clientRef || '', arr: r.first ? hm(r.first.t) : '', dep: r.lastOut ? hm(r.lastOut.t) : '', heures: Math.round(r.hours * 100) / 100, retardMin: r.retard, absent: !r.evs.length && r.state.startsWith('Absent'), etat: r.state, alertes: r.flags.filter(f => f.sev !== 'ok').map(f => f.k), modes: [...new Set(r.evs.map(e => e.mode))], signataires: [...new Set(r.evs.map(e => e.signerId))], eventIds: r.evs.map(e => e.id) });
       }
     }
     return { per, entries };
+  }
+  function buildExport(m) {
+    const { entries } = monthStats(m);
+    return { format: 'spc-pointages', version: 2, mois: m, genere: new Date().toISOString(), source: 'central', entrees: entries };
+  }
+  const exportPath = m => 'exports/pointages-' + m + '.json';
+  /** Écrit dans le dépôt le fichier vérifié que l'application de gestion vient chercher. */
+  async function publishExport(m, force) {
+    if (!cfg) return false;
+    const obj = buildExport(m); if (!obj.entrees.length && !force) return false;
+    const h = await SPC.sha256(JSON.stringify(obj.entrees)), last = (await db.get('kv', 'pub:' + m)) || {};
+    if (!force && last.h === h) return false;
+    await SPC.queueFile(db, exportPath(m), obj, 'replace');
+    await db.set('kv', 'pub:' + m, { h, t: new Date().toISOString(), n: obj.entrees.length });
+    return true;
+  }
+  async function autoPublish() {
+    if (!cfg || settings().autoExport === false) return;
+    const now = new Date(), months = [SPC.localDate().slice(0, 7)];
+    if (now.getDate() <= 7) { const pm = new Date(now.getFullYear(), now.getMonth() - 1, 1); months.push(pm.getFullYear() + '-' + String(pm.getMonth() + 1).padStart(2, '0')); }
+    let any = false; for (const m of months) any = (await publishExport(m)) || any;
+    if (any) { try { await SPC.sync(db, cfg); } catch (e) { /* réessayé au prochain chargement */ } }
   }
   function monthView() {
     const { per } = monthStats(month);
     return `<div class="row" style="margin-bottom:10px"><label class="f grow" style="margin:0">Mois<input type="month" id="month" value="${month}"></label><button data-act="csv">Exporter CSV</button><button class="primary" data-act="json">Exporter pour l'application SPC</button></div>
       <div class="card scroll"><table><thead><tr><th>Agent</th><th>Jours prévus</th><th>Jours pointés</th><th>Heures</th><th>Retards</th><th>Alertes</th></tr></thead><tbody>${Object.entries(per).map(([id, p]) => `<tr><td>${esc(agentName(id))}</td><td>${p.prevus}</td><td>${p.jours}</td><td>${h1(p.heures)}</td><td>${p.retards}</td><td>${p.alertes}</td></tr>`).join('') || '<tr><td colspan="6" class="sub">Aucune donnée ce mois.</td></tr>'}</tbody></table></div>
-      <p class="sub">L'export « application SPC » se charge dans l'application de gestion (Rapport journalier) : une ligne par agent, lieu et jour.</p>`;
+      <div class="card"><h3>Envoi vers l'application de gestion</h3><p>${pubInfo ? `<span class="chip ok">Publié</span> le ${new Date(pubInfo.t).toLocaleString('fr-FR')} · ${pubInfo.n} ligne(s)` : '<span class="chip warn">Pas encore publié pour ce mois</span>'}</p>
+        <p class="sub">Le fichier vérifié <b>${exportPath(month)}</b> est écrit dans le dépôt de données ${settings().autoExport === false ? '(publication automatique désactivée dans Réglages)' : 'automatiquement à chaque ouverture du central'}. L'application de gestion le récupère (Réglages, Pointages) : une ligne par agent, lieu et jour.</p>
+        <div class="row"><button class="primary" data-act="publish">Publier maintenant</button></div></div>`;
   }
   function agentsView() {
     return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newagent">Nouvel agent ou superviseur</button><button data-act="badgeall">Imprimer tous les badges</button></div>
@@ -172,7 +197,7 @@
     return `<div class="card"><h2>Connexion au dépôt de données</h2><p class="sub">${cfg ? esc(cfg.repo) + ' · branche ' + esc(cfg.branch) : ''}</p>
       <p class="sub">Dernière synchronisation : ${lastSync ? new Date(lastSync).toLocaleString('fr-FR') : 'jamais'}${pending ? ` · ${pending} modification(s) à envoyer` : ''}${lastErr ? ' · ' + esc(lastErr) : ''}</p>
       <div class="row"><button class="primary" data-act="reload">Synchroniser</button><button data-act="config">Modifier la connexion</button></div></div>
-      <div class="card"><h3>Règles de calcul</h3><label class="f">Pause quotidienne déduite (heures, journée d'un seul tenant de 6 h ou plus)<input id="set_pause" type="number" step="0.5" min="0" value="${settings().pause}"></label><label class="f">Tolérance de retard (minutes)<input id="set_retard" type="number" min="0" value="${settings().retard}"></label><label class="f">Alerte si le scan est à plus de ... mètres du lieu (0 = désactivée, utile seulement si les coordonnées du lieu sont fiables)<input id="set_gps" type="number" min="0" value="${settings().gpsAlert}"></label><button data-act="saveset">Enregistrer</button></div>
+      <div class="card"><h3>Règles de calcul</h3><label class="f">Pause quotidienne déduite (heures, journée d'un seul tenant de 6 h ou plus)<input id="set_pause" type="number" step="0.5" min="0" value="${settings().pause}"></label><label class="f"><span><input id="set_auto" type="checkbox"${settings().autoExport === false ? '' : ' checked'}> Publier automatiquement les pointages vers l'application de gestion</span></label><label class="f">Tolérance de retard (minutes)<input id="set_retard" type="number" min="0" value="${settings().retard}"></label><label class="f">Alerte si le scan est à plus de ... mètres du lieu (0 = désactivée, utile seulement si les coordonnées du lieu sont fiables)<input id="set_gps" type="number" min="0" value="${settings().gpsAlert}"></label><button data-act="saveset">Enregistrer</button></div>
       <div class="card"><h3>Sauvegarde des clés de signature</h3><p class="sub">Les clés ne sont stockées que sur cet appareil (jamais sur GitHub). Sans elles, les signatures des pointages ne peuvent plus être vérifiées. Exportez-les et gardez le fichier en lieu sûr.</p><div class="row"><button data-act="exportkeys">Exporter les clés</button><label class="btn">Importer des clés<input type="file" id="keyfile" accept=".json" style="display:none"></label></div></div>`;
   }
   function setupView() {
@@ -286,7 +311,7 @@
 
   document.addEventListener('change', async e => {
     if (e.target.id === 'day') { day = e.target.value || SPC.localDate(); render(); }
-    if (e.target.id === 'month') { month = e.target.value || month; render(); }
+    if (e.target.id === 'month') { month = e.target.value || month; counts().then(render); }
     if (e.target.id === 'keyfile' && e.target.files[0]) { try { const j = JSON.parse(await e.target.files[0].text()); for (const [k, v] of Object.entries(j)) keys[k] = Array.from(new Set((keys[k] || []).concat(v))); await db.set('kv', 'keys', keys); await verify(); render(); toast('Clés importées'); } catch (er) { toast('Fichier de clés invalide'); } }
   });
   document.addEventListener('click', async e => {
@@ -295,13 +320,14 @@
       case 'tab': tab = d.tab; render(); break;
       case 'close': closeModal(); break;
       case 'reload': load(); break;
+      case 'publish': { const ok = await publishExport(month, true); if (ok) { try { await SPC.sync(db, cfg); } catch (er) { /* hors connexion : parti plus tard */ } } await counts(); render(); toast(ok ? (navigator.onLine ? 'Publié dans le dépôt' : 'Enregistré : sera envoyé au retour de la connexion') : 'Rien à publier'); break; }
       case 'saveconfig': {
         const repo = $('#c_repo').value.trim(), token = $('#c_token').value.trim(), dt = $('#c_dtoken').value.trim();
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !token || !dt) return toast('Renseignez le dépôt et les deux jetons');
         cfg = { repo, branch: $('#c_branch').value.trim() || 'main', token, deviceToken: dt, apiBase: $('#c_api').value.trim(), settings: { pause: 1, retard: 5 } }; await db.set('kv', 'cfg', cfg); render(); load(); break;
       }
       case 'config': if (confirm('Modifier la connexion ? Les clés de signature sont conservées.')) { const old = cfg; cfg = null; render(); $('#c_repo').value = old.repo; $('#c_branch').value = old.branch; $('#c_api').value = old.apiBase || ''; } break;
-      case 'saveset': cfg.settings = { pause: +$('#set_pause').value || 0, retard: +$('#set_retard').value || 0, gpsAlert: +$('#set_gps').value || 0 }; await verify(); await db.set('kv', 'cfg', cfg); render(); toast('Règles enregistrées'); break;
+      case 'saveset': cfg.settings = { pause: +$('#set_pause').value || 0, retard: +$('#set_retard').value || 0, gpsAlert: +$('#set_gps').value || 0, autoExport: $('#set_auto').checked }; await verify(); await db.set('kv', 'cfg', cfg); render(); toast('Règles enregistrées'); break;
       case 'newagent': agentForm(); break;
       case 'saveagent': saveAgent(); break;
       case 'link': showLink(D.agents.find(a => a.id === d.id)); break;
@@ -330,7 +356,7 @@
         const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
         download('pointages-' + month + '.csv', '\ufeff' + [head.map(q).join(';')].concat(entries.map(r => [r.date, r.agentCode, r.agentNom, r.siteNom, r.clientRef, r.arr, r.dep, String(r.heures).replace('.', ','), r.retardMin, r.etat, r.alertes.join(' | ')].map(q).join(';'))).join('\r\n'), 'text/csv'); break;
       }
-      case 'json': { const { entries } = monthStats(month); download('spc-pointages-' + month + '.json', JSON.stringify({ format: 'spc-pointages', version: 1, mois: month, genere: new Date().toISOString(), entrees: entries }, null, 1), 'application/json'); break; }
+      case 'json': download('spc-pointages-' + month + '.json', JSON.stringify(buildExport(month), null, 1), 'application/json'); break;
       case 'exportkeys': download('spc-cles-signature.json', JSON.stringify(keys), 'application/json'); toast('Gardez ce fichier en lieu sûr'); break;
     }
   });
