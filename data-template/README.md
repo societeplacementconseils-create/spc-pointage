@@ -9,6 +9,9 @@ assignments/<ID>.json                  affectations : agent, lieu, jours, horair
 pointages/AAAA-MM/AAAA-MM-JJ/<agent>.json   événements d'arrivée et de départ, signés et chaînés
 validations/<ID d'événement>.json      décisions du superviseur sur les pointages hors zone
 exports/pointages-AAAA-MM.json         fichier vérifié publié par le central pour l'application de gestion
+exports/employes.json                  fiche du personnel CHIFFRÉE publiée par le central pour l'application de gestion
+echange/clients.json                   clients CHIFFRÉS (code, nom, adresse, pôles, horaires) publiés par l'application de gestion pour le central
+echange/plannings.json                 plannings CHIFFRÉS déduits des affectations par l'application de gestion pour le central
 config/settings.json                   version du format
 ```
 

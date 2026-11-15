@@ -32,14 +32,30 @@ Sur Android : ouvrir le lien d'activation dans Chrome, menu ⋮ → **Ajouter à
 ## Remplacer un code QR
 Si une affiche est perdue ou photographiée : central → Lieux → Code QR → **Remplacer le code**. L'ancien code est refusé dès que les téléphones se sont synchronisés. Imprimez et posez la nouvelle affiche.
 
-## Renvoi des pointages vers l'application de gestion SPC
-Le renvoi est automatique et passe par un **fichier vérifié** : le central contrôle les signatures, calcule les heures, puis écrit `exports/pointages-AAAA-MM.json` dans le dépôt de données. L'application de gestion le récupère et alimente le **Rapport journalier** (arrivée, départ, absences, anomalies, mode de pointage).
-1. **Central** : la publication est automatique à chaque ouverture du central (mois en cours, et mois précédent pendant les 7 premiers jours). Onglet **Mois → Publier maintenant** pour forcer. Réglages : case « Publier automatiquement » (activée par défaut).
-2. **Jeton de lecture** : sur GitHub, créez un troisième jeton `spc-gestion` limité au dépôt `spc-pointage-data`, permission **Contents : Read-only** (lecture seule).
-3. **Application de gestion** : ouvrez le fichier `spc-gestion-client.html` depuis votre ordinateur (la page publiée dans Claude n'a pas le droit de contacter GitHub : utilisez alors **Importer un fichier**). Réglages → rubrique **Pointages** : dépôt `societeplacementconseils-create/spc-pointage-data`, branche `main`, jeton `spc-gestion`, cochez « Récupérer automatiquement à l'ouverture », **Enregistrer la connexion**, puis **Récupérer les pointages**.
-4. **Liaison des données** : le **code client** du lieu (ex. `CLI-2026-001`) doit être celui de la fiche client ; l'agent est reconnu par son **nom** (puis lié à son code `AGT-001` automatiquement) ou par le code de pointage saisi dans sa fiche. Les lignes sans équivalent sont signalées dans le compte rendu.
-5. Une nouvelle récupération du même mois met à jour les lignes sans doublon. Le jeton reste dans le navigateur et n'est jamais inclus dans les sauvegardes.
-En secours, **Mois → Exporter pour l'application SPC** télécharge le même fichier, à importer avec **Importer un fichier**.
+## Échanges avec l'application de gestion SPC (qui est la source de quoi)
+| Donnée | Source | Destination | Fichier dans le dépôt de données |
+|---|---|---|---|
+| **Personnel** : fiche complète saisie au central (identité, naissance, adresse, pièce d'identité, CNSS, poste, garants, notes, état actif) | **Central** (chiffré) | SPC Gestion (Intervenantes ; superviseurs dans le Robot) | `exports/employes.json` |
+| **Clients** (code, nom, adresse, pôles, horaires) | **SPC Gestion** (chiffré) | Central (onglet Lieux) | `echange/clients.json` |
+| **Plannings** (agent, client, jours, horaires, prise de poste), déduits des affectations par le Robot opérationnel | **SPC Gestion** (chiffré) | Central (onglet Plannings) | `echange/plannings.json` |
+| **Pointages** (arrivée, départ, heures, anomalies, mode) | Central (vérifié) | SPC Gestion (Rapport journalier) | `exports/pointages-AAAA-MM.json` |
+
+**Chiffrement.** Les téléphones de terrain lisent le dépôt de données. Les fichiers du personnel, des clients et des plannings sont donc chiffrés (AES-GCM) avec une **clé d'échange** générée par le central (Réglages → Copier la clé) et copiée une fois dans SPC Gestion (Réglages → Pointages). Les informations sensibles du personnel ne sont jamais écrites en clair dans le dépôt : les fichiers `agents/` ne contiennent que le code, le nom, le téléphone et l'état. La clé d'échange fait partie de la sauvegarde des clés du central.
+
+**Ce qui part, et ce qui ne part jamais.** Vers le central, SPC Gestion n'envoie que le code client, le nom, l'adresse du site, les pôles et les horaires : jamais téléphone, e-mail, santé, préférences ni tarifs (les clients de démonstration sont exclus). Vers SPC Gestion, le central n'envoie aucune clé de signature ni empreinte de badge ou de code QR.
+
+**Mise en place**
+1. **Central** : la publication est automatique à chaque ouverture (personnel et pointages du mois en cours, plus le mois précédent pendant les 7 premiers jours). Onglet **Mois → Publier maintenant** pour forcer.
+2. **Jeton `spc-gestion`** : jeton GitHub limité au dépôt `spc-pointage-data`, permission **Contents : Read and write** (nécessaire pour envoyer les clients et les plannings). Il reste sur l'ordinateur de la direction, comme le jeton du central.
+3. **SPC Gestion** : ouvrez le fichier `spc-gestion-client.html` depuis votre ordinateur (la page publiée dans Claude n'a pas le droit de contacter GitHub). Réglages → **Pointages** : dépôt, branche, jeton, **clé d'échange**, case « Récupérer automatiquement à l'ouverture ». À l'ouverture, l'application récupère les pointages et le personnel, puis envoie les clients et les plannings si leur contenu a changé (une modification est envoyée 4 à 5 secondes plus tard).
+4. **Personnel** : onglet **Agents → Nouvel employé** (ou **Fiche** pour modifier) au central : toutes les informations saisies sont transmises à SPC Gestion, qui crée une fiche d'intervenante (dossier à compléter : aucun des 7 contrôles validé, donc non affectable) ou met à jour la fiche reconnue par son code ou son nom. Le dossier de candidature, les pièces et les contrôles restent dans SPC Gestion. Les superviseurs sont consultables dans le Robot opérationnel.
+5. **Clients** : au central, onglet **Lieux**, la carte « Clients de SPC Gestion » liste les clients reçus ; **Créer le lieu** (ou **Créer les lieux manquants**) fabrique le lieu avec son code QR ; **Mettre à jour** reprend le nom et l'adresse modifiés. Le central ne modifie jamais un client.
+6. **Plannings** : le Robot opérationnel de SPC Gestion déduit les plannings des affectations ; au central, onglet **Plannings**, **Appliquer** (ou **Appliquer tout**) crée les affectations de présence, si l'agent et le lieu du client existent.
+7. **Pointages** : une ligne par agent, lieu et jour dans le Rapport journalier ; une nouvelle récupération met à jour sans doublon.
+En secours, **Mois → Exporter pour l'application SPC** télécharge le fichier des pointages, à importer avec **Importer un fichier**.
+
+## Robot opérationnel et prospection (dans SPC Gestion)
+Le **Robot opérationnel** planifie et suit l'avancement des exécutions (taux de réalisation des placements, absences, retards, suivis J+3/J+15/J+30, incidents, missions par phase, agenda des 7 jours, propositions d'affectation, plannings à transmettre au central). Le module **Prospects** enregistre et note les entreprises et organisations à démarcher ; le robot de prospection est Claude avec le skill SPC. Voir `tests/gestion-robot.py` et le guide du système.
 
 ## Limites et précautions (à lire)
 - **Une affiche peut être photographiée.** Quelqu'un pourrait scanner la photo du code depuis un autre endroit. Parades : placer l'affiche à l'intérieur du lieu, contrôles du superviseur, **alerte facultative « scan loin du lieu »** (central → Réglages, utile seulement si les coordonnées du lieu sont fiables), remplacement du code en cas de doute. Un code QR qui change automatiquement (affiché sur l'écran du superviseur) est possible plus tard.
@@ -51,7 +67,7 @@ En secours, **Mois → Exporter pour l'application SPC** télécharge le même f
 - **Limites GitHub** : 5 000 requêtes par heure et par jeton ; largement suffisant pour des dizaines d'agents.
 
 ## Tests
-`node tests/mock-github.js 4010` lance un faux serveur GitHub ; `python3 tests/e2e.py` joue le scénario complet (central, superviseur, deux agents, saisie du code, scan simulé, coupure de connexion, remplacement du code, falsification) : 56 contrôles. `python3 tests/gestion-sync.py` teste la récupération des pointages par l'application de gestion (14 contrôles, après e2e.py). `python3 tests/qr-check.py` vérifie que les codes QR générés se lisent (OpenCV).
+`node tests/mock-github.js 4010` lance un faux serveur GitHub ; `python3 tests/e2e.py` joue le scénario complet (central, superviseur, deux agents, saisie du code, scan simulé, coupure de connexion, remplacement du code, falsification) : 72 contrôles. `python3 tests/gestion-sync.py` teste les échanges côté application de gestion : pointages, personnel, clients et plannings chiffrés (36 contrôles, après e2e.py). `python3 tests/gestion-robot.py` teste le robot opérationnel et les prospects (30 contrôles). `python3 tests/qr-check.py` vérifie que les codes QR générés se lisent (OpenCV).
 
 ## Dépôt de données
 Voir `data-template/README.md`.

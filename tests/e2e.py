@@ -127,7 +127,7 @@ try:
     check('pointage manuel signalé','Pointage manuel' in t); check('pointages par badge signalés avec le chef d\'équipe','Badge scanné par SUP-001' in t); check('aucune signature invalide sur les données saines','Signature invalide' not in t and 'Empreinte modifiée' not in t)
     # ---------- Renvoi vers l'application de gestion : fichier vérifié publié par le central ----------
     print("5b. Publication automatique vers l'application de gestion")
-    d=dump(); exk=[k for k in d if k.startswith('exports/')]
+    d=dump(); exk=[k for k in d if k.startswith('exports/pointages-')]
     check('le central publie automatiquement exports/pointages-AAAA-MM.json dans le dépôt de données',exk==['exports/pointages-'+MONTH+'.json'],exk)
     pub=json.loads(d[exk[0]]) if exk else {}
     check('le fichier publié est au format spc-pointages v2 avec le mode de chaque pointage (qr, badge, manuel)',pub.get('format')=='spc-pointages' and pub.get('version')==2 and pub.get('mois')==MONTH and any('qr' in e.get('modes',[]) for e in pub.get('entrees',[])) and any('badge' in e.get('modes',[]) for e in pub.get('entrees',[])) and any('manuel' in e.get('modes',[]) for e in pub.get('entrees',[])),json.dumps(pub)[:300])
@@ -163,6 +163,57 @@ try:
     cp.click('[data-act=tab][data-tab=set]'); 
     with cp.expect_download() as dl: cp.click('[data-act=exportkeys]')
     kj=json.load(open(dl.value.path())); check('la sauvegarde des clés contient la clé maîtresse des codes QR et les clés des agents','__master' in kj and 'AGT-001' in kj,list(kj))
+    # ---------- Échanges avec SPC Gestion : employés (central -> gestion), clients (gestion -> central) ----------
+    print("6. Échanges de données : employés vers la gestion, clients vers le central")
+    emp=json.loads(dump().get('exports/employes.json','{}'))
+    raw_emp=dump().get('exports/employes.json','')
+    check("le central publie la fiche du personnel dans exports/employes.json, CHIFFRÉE (illisible sans la clé d'échange)",emp.get('format')=='spc-employes' and emp.get('version')==2 and emp.get('chiffre') is True and emp.get('data') and 'Fanta' not in raw_emp and 'AGT-001' not in raw_emp,list(emp))
+    xk=cp.evaluate("SPC.db('spc-central').get('kv','keys').then(k=>k.__echange[k.__echange.length-1])")
+    dec=cp.evaluate("([k,e])=>SPC.xDecrypt(k,e)",[xk,emp]); codes=sorted(e['code'] for e in dec['employes'])
+    check("avec la clé d'échange, la fiche contient les 2 agents et le superviseur, sans clé de signature ni empreinte",codes==['AGT-001','AGT-002','SUP-001'] and 'badgeHash' not in json.dumps(dec) and all('nomFamille' in e for e in dec['employes']),codes)
+    cl={'format':'spc-clients','version':1,'genere':time.strftime('%Y-%m-%dT%H:%M:%S.000Z'),'source':'gestion','clients':[
+      {'ref':'CLI-2026-001','nom':'Résidence Test','adresse':'Kipé, Ratoma, près du rond-point','poles':['Placement RH'],'horaires':'7h30 à 17h30'},
+      {'ref':'CLI-2026-002','nom':'Famille Bah','adresse':'Lambanyi, Ratoma','poles':['Placement RH'],'horaires':'8h à 16h'},
+      {'ref':'CLI-2026-003','nom':'Famille Sow','adresse':'Nongo, Ratoma','poles':[],'horaires':''}]}
+    post('set',{'path':'echange/clients.json','content':json.dumps(cl)})
+    cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000); cp.click('[data-act=tab][data-tab=sites]'); cp.wait_for_timeout(400); tx=cp.inner_text('body')
+    check("l'onglet Lieux affiche les clients reçus de SPC Gestion avec l'état de chaque lieu",'Clients de SPC Gestion' in tx and 'Famille Bah' in tx and 'Famille Sow' in tx and 'Sans lieu' in tx and 'Différent de SPC Gestion' in tx,tx[:400])
+    cp.locator('[data-act=sitefromclient][data-ref="CLI-2026-002"]').click(); cp.wait_for_timeout(3000)
+    sites={k:json.loads(v) for k,v in dump().items() if k.startswith('sites/')}; bah=[s for s in sites.values() if s.get('clientRef')=='CLI-2026-002']
+    check("« Créer le lieu » crée le lieu du client (nom, adresse, code client) avec son code QR",len(bah)==1 and bah[0]['nom']=='Famille Bah' and bah[0]['adresse']=='Lambanyi, Ratoma' and bah[0].get('qrHash'),bah)
+    cp.click('[data-act=sitesfromclients]'); cp.wait_for_timeout(3000); sites={k:json.loads(v) for k,v in dump().items() if k.startswith('sites/')}
+    check("« Créer les lieux manquants » crée le lieu des autres clients, sans doublon",len([s for s in sites.values() if s.get('clientRef')=='CLI-2026-003'])==1 and len([s for s in sites.values() if s.get('clientRef')=='CLI-2026-002'])==1)
+    cp.locator('[data-act=syncsite]').first.click(); cp.wait_for_timeout(3000); sites={k:json.loads(v) for k,v in dump().items() if k.startswith('sites/')}
+    check("« Mettre à jour » reprend l'adresse du client de SPC Gestion dans le lieu existant",[s['adresse'] for s in sites.values() if s.get('clientRef')=='CLI-2026-001']==['Kipé, Ratoma, près du rond-point'])
+    cp.click('[data-act=newsite]'); cp.wait_for_timeout(300); check("le formulaire de lieu propose de choisir un client de SPC Gestion",cp.locator('#s_client').count()==1)
+    cp.select_option('#s_client','CLI-2026-003'); cp.wait_for_timeout(200); check("le choix du client remplit le nom, l'adresse et le code client",cp.input_value('#s_nom')=='Famille Sow' and cp.input_value('#s_adr')=='Nongo, Ratoma' and cp.input_value('#s_cli')=='CLI-2026-003'); cp.click('[data-act=close]')
+    # ---------- Personnel : fiche complète au central, transmise chiffrée à SPC Gestion ----------
+    print("7. Fiche du personnel complète (chiffrée) et plannings reçus de SPC Gestion")
+    def decrypt_file(path):
+        env=json.loads(dump()[path]); return cp.evaluate("([k,e])=>SPC.xDecrypt(k,e)",[xk,env])
+    cp.click('[data-act=tab][data-tab=agents]'); cp.click('[data-act=newagent]'); cp.wait_for_timeout(300)
+    for sel,val in [('#a_prenoms','Mariama Binta'),('#a_nom','Soumah'),('#a_naiss','1995-03-12'),('#a_tel','+224 622 33 44 55'),('#a_adr','Kipé, Ratoma, Conakry'),('#a_piece','CNI 123456789'),('#a_cnss','CNSS-998877'),('#a_g0n','Oumar Soumah'),('#a_g0t','+224 600 00 00 11'),('#a_g0l','Frère'),('#a_g1n','Hawa Bah'),('#a_g1t','+224 600 00 00 22'),('#a_g1l','Ancienne employeuse'),('#a_notes','Parle français et soussou')]: cp.fill(sel,val)
+    cp.select_option('#a_poste','nounou_std'); cp.click('[data-act=saveagent]'); cp.wait_for_timeout(3500); cp.click('[data-act=close]')
+    dec=decrypt_file('exports/employes.json'); me=[e for e in dec['employes'] if e['nomFamille']=='Soumah']
+    check("le formulaire du central enregistre toute la fiche : identité, naissance, adresse, pièce, CNSS, poste, garants, notes",len(me)==1 and me[0]['prenoms']=='Mariama Binta' and me[0]['naissance']=='1995-03-12' and me[0]['adresse']=='Kipé, Ratoma, Conakry' and me[0]['piece']=='CNI 123456789' and me[0]['cnss']=='CNSS-998877' and me[0]['poste']=='nounou_std' and me[0]['garants'][0]['nom']=='Oumar Soumah' and me[0]['garants'][1]['lien']=='Ancienne employeuse' and me[0]['notes']=='Parle français et soussou' and me[0]['nom']=='Mariama Binta Soumah',me)
+    allraw=json.dumps(dump()); check("les informations sensibles (CNSS, pièce, adresse, naissance, garants) ne sont lisibles nulle part en clair dans le dépôt",not any(x in allraw for x in ['CNSS-998877','CNI 123456789','1995-03-12','Oumar Soumah','Parle français']))
+    cp.locator('.card',has_text='Mariama Binta Soumah').locator('[data-act=editagent]').click(); cp.wait_for_timeout(300); check("la fiche se rouvre avec les informations saisies",cp.input_value('#a_cnss')=='CNSS-998877' and cp.input_value('#a_g1n')=='Hawa Bah')
+    cp.fill('#a_tel','+224 611 00 00 00'); cp.fill('#a_adr','Lambanyi, Ratoma'); cp.click('[data-act=saveagent]'); cp.wait_for_timeout(3500)
+    dec=decrypt_file('exports/employes.json'); me=[e for e in dec['employes'] if e['nomFamille']=='Soumah'][0]; check("une modification de la fiche est transmise (téléphone et adresse)",me['tel']=='+224 611 00 00 00' and me['adresse']=='Lambanyi, Ratoma',me)
+    encc=cp.evaluate("([k,o])=>SPC.xEncrypt(k,o)",[xk,{'genere':time.strftime('%Y-%m-%dT%H:%M:%S.000Z'),'clients':[{'ref':'CLI-2026-077','nom':'Entreprise Test SA','adresse':'Kaloum, Conakry','poles':['Accueil'],'horaires':'8h à 17h'}]}])
+    post('set',{'path':'echange/clients.json','content':json.dumps(dict({'format':'spc-clients','version':2,'source':'gestion'},**encc))})
+    cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000); cp.click('[data-act=tab][data-tab=sites]'); cp.wait_for_timeout(400)
+    check("le central déchiffre la liste des clients envoyée par SPC Gestion",'Entreprise Test SA' in cp.inner_text('body') and 'CLI-2026-077' in cp.inner_text('body'))
+    encp=cp.evaluate("([k,o])=>SPC.xEncrypt(k,o)",[xk,{'genere':time.strftime('%Y-%m-%dT%H:%M:%S.000Z'),'plannings':[
+      {'ref':'AFF-2026-001','agentCode':'AGT-002','agentNom':'Aminata Bah','clientRef':'CLI-2026-001','clientNom':'Résidence Test','jours':[1,2,3,4,5],'debut':'07:30','fin':'17:30','du':time.strftime('%Y-%m-%d'),'au':''},
+      {'ref':'AFF-2026-002','agentCode':'AGT-099','agentNom':'Inconnue','clientRef':'CLI-2026-001','clientNom':'Résidence Test','jours':[1,2,3],'debut':'08:00','fin':'16:00','du':time.strftime('%Y-%m-%d'),'au':''}]}])
+    post('set',{'path':'echange/plannings.json','content':json.dumps(dict({'format':'spc-plannings','version':1,'source':'gestion'},**encp))})
+    cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000); cp.click('[data-act=tab][data-tab=asg]'); cp.wait_for_timeout(400); tx=cp.inner_text('body')
+    check("l'onglet Plannings affiche les plannings reçus avec leur état (à créer, agent non enregistré)",'Plannings proposés par SPC Gestion' in tx and 'À créer' in tx and 'Agent non enregistré' in tx,tx[:500])
+    cp.locator('[data-act=applypl][data-ref="AFF-2026-001"]').click(); cp.wait_for_timeout(3000)
+    asg=[json.loads(v) for k,v in dump().items() if k.startswith('assignments/')]; g=[a for a in asg if a.get('affRef')=='AFF-2026-001']
+    check("« Appliquer » crée l'affectation de présence (agent, lieu, jours, horaires) marquée comme venant de SPC Gestion",len(g)==1 and g[0]['agentId']=='AGT-002' and g[0]['jours']==[1,2,3,4,5] and g[0]['debut']=='07:30' and g[0]['source']=='gestion',g)
+    check("le planning appliqué passe à « En place » et l'agent inconnu reste signalé",'En place' in cp.inner_text('body') and 'Agent non enregistré' in cp.inner_text('body'))
     cc.set_offline(True); cp.reload(); cp.wait_for_timeout(1500); check('central consultable hors connexion','Fanta Camara' in cp.inner_text('body') or 'Jour' in cp.inner_text('body'))
     b.close()
 finally:

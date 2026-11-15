@@ -4,17 +4,17 @@
   const { esc, toast, modal, closeModal, fdate, hm } = SPC;
   const $ = s => document.querySelector(s);
   const db = SPC.db('spc-central');
-  let cfg = null, keys = {}, D = emptyD(), tab = 'day', day = SPC.localDate(), month = SPC.localDate().slice(0, 7), loading = false, lastErr = '', pending = 0, lastSync = '', V = null, pubInfo = null;
+  let cfg = null, keys = {}, D = emptyD(), tab = 'day', day = SPC.localDate(), month = SPC.localDate().slice(0, 7), loading = false, lastErr = '', pending = 0, lastSync = '', V = null, pubInfo = null, CL = null, FI = {}, PL = null, XK = '';
   function emptyD() { return { agents: [], sites: [], assignments: [], validations: [], events: [], deleted: [] }; }
 
   /* ---------- démarrage ---------- */
   async function boot() {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-    cfg = await db.get('kv', 'cfg'); keys = (await db.get('kv', 'keys')) || {}; D = (await db.get('kv', 'data')) || D;
+    cfg = await db.get('kv', 'cfg'); keys = (await db.get('kv', 'keys')) || {}; D = (await db.get('kv', 'data')) || D; CL = (await db.get('kv', 'clients')) || null; FI = (await db.get('kv', 'fiches')) || {}; PL = (await db.get('kv', 'plannings')) || null;
     await counts(); await verify(); render(); if (cfg) load();
     addEventListener('online', () => load()); addEventListener('offline', render);
   }
-  async function counts() { pending = (await db.keys('outbox')).length; lastSync = (await db.get('kv', 'lastSync')) || ''; pubInfo = (await db.get('kv', 'pub:' + month)) || null; }
+  async function counts() { XK = await xkey(); pending = (await db.keys('outbox')).length; lastSync = (await db.get('kv', 'lastSync')) || ''; pubInfo = (await db.get('kv', 'pub:' + month)) || null; }
 
   /* ---------- chargement du dépôt (arbre Git + cache par empreinte) ---------- */
   async function load() {
@@ -36,11 +36,22 @@
         out.events.forEach(e => { seen[e.id] = { id: e.id, agentId: e.agentId, date: e.date, type: e.type, t: e.t }; });
         await db.set('kv', 'seen', seen);
         D = out; await db.set('kv', 'data', D);
+        try { const cf = await readEnc(gh, 'echange/clients.json', 'spc-clients'); CL = cf && Array.isArray(cf.clients) ? cf : null; await db.set('kv', 'clients', CL); } catch (e) { /* le fichier de clients est facultatif */ }
+        try { const pf = await readEnc(gh, 'echange/plannings.json', 'spc-plannings'); PL = pf && Array.isArray(pf.plannings) ? pf : null; await db.set('kv', 'plannings', PL); } catch (e) { /* facultatif */ }
+        if (!Object.keys(FI).length && D.agents.length) { try { const ef = await readEnc(gh, 'exports/employes.json', 'spc-employes'); if (ef && Array.isArray(ef.employes)) { for (const e of ef.employes) FI[e.code] = { prenoms: e.prenoms, nom: e.nomFamille, naissance: e.naissance, adresse: e.adresse, piece: e.piece, cnss: e.cnss, poste: e.poste, garants: e.garants, notes: e.notes }; await db.set('kv', 'fiches', FI); } } catch (e) { /* facultatif */ } }
       }
     } catch (e) { lastErr = e.code === 'auth' ? 'Jeton refusé par GitHub' : (e.message || e.code); }
     if (cfg && navigator.onLine && (D.sites.some(s => !s.qrHash) || D.agents.some(a => !a.badgeHash))) { try { await ensureQr(); await db.set('kv', 'data', D); } catch (e) { /* réessayé au prochain chargement */ } }
     loading = false; await counts(); await verify(); render();
     if (cfg && navigator.onLine) autoPublish().then(async () => { await counts(); render(); }).catch(() => {});
+  }
+
+  /* ---------- échanges chiffrés avec SPC Gestion ---------- */
+  async function xkey() { if (!keys.__echange || !keys.__echange.length) { keys.__echange = [SPC.newKey()]; await db.set('kv', 'keys', keys); } return keys.__echange[keys.__echange.length - 1]; }
+  async function readEnc(gh, path, fmt) {
+    const f = await gh.get(path); if (!f || !f.json || f.json.format !== fmt) return null;
+    if (!f.json.chiffre) return f.json;
+    try { return Object.assign({ format: fmt }, await SPC.xDecrypt(await xkey(), f.json)); } catch (e) { return null; }
   }
 
   /* ---------- codes QR des lieux ---------- */
@@ -155,6 +166,19 @@
     return { format: 'spc-pointages', version: 2, mois: m, genere: new Date().toISOString(), source: 'central', entrees: entries };
   }
   const exportPath = m => 'exports/pointages-' + m + '.json';
+  /** Fiche du personnel : le central est la source ; SPC Gestion la récupère (fichier chiffré, jamais de clé ni d'empreinte). */
+  function buildEmployes() {
+    return { genere: new Date().toISOString(), employes: D.agents.map(a => { const f = FI[a.id] || {};
+      return { code: a.id, role: a.role, nom: a.nom, prenoms: f.prenoms || '', nomFamille: f.nom || '', naissance: f.naissance || '', tel: a.tel || '', adresse: f.adresse || '', piece: f.piece || '', cnss: f.cnss || '', poste: f.poste || '', garants: f.garants || [], notes: f.notes || '', actif: a.actif !== false, creeLe: a.createdAt || '' }; }) };
+  }
+  async function publishEmployes(force) {
+    if (!cfg) return false;
+    const plain = buildEmployes(); if (!plain.employes.length && !force) return false;
+    const h = await SPC.sha256(JSON.stringify(plain.employes)), last = (await db.get('kv', 'pub:employes')) || {}, obj = Object.assign({ format: 'spc-employes', version: 2, source: 'central', genere: plain.genere }, await SPC.xEncrypt(await xkey(), plain));
+    if (!force && last.h === h) return false;
+    await SPC.queueFile(db, 'exports/employes.json', obj, 'replace'); await db.set('kv', 'pub:employes', { h, t: new Date().toISOString(), n: plain.employes.length });
+    return true;
+  }
   /** Écrit dans le dépôt le fichier vérifié que l'application de gestion vient chercher. */
   async function publishExport(m, force) {
     if (!cfg) return false;
@@ -170,6 +194,7 @@
     const now = new Date(), months = [SPC.localDate().slice(0, 7)];
     if (now.getDate() <= 7) { const pm = new Date(now.getFullYear(), now.getMonth() - 1, 1); months.push(pm.getFullYear() + '-' + String(pm.getMonth() + 1).padStart(2, '0')); }
     let any = false; for (const m of months) any = (await publishExport(m)) || any;
+    any = (await publishEmployes()) || any;
     if (any) { try { await SPC.sync(db, cfg); } catch (e) { /* réessayé au prochain chargement */ } }
   }
   function monthView() {
@@ -182,21 +207,52 @@
   }
   function agentsView() {
     return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newagent">Nouvel agent ou superviseur</button><button data-act="badgeall">Imprimer tous les badges</button></div>
-      ${D.agents.map(a => `<div class="card"><div class="row"><h3 class="grow">${esc(a.nom)}</h3><span class="chip">${a.role === 'superviseur' ? 'Superviseur' : 'Agent'}</span>${a.actif === false ? '<span class="chip bad">inactif</span>' : ''}</div><div class="sub">${esc(a.id)} · ${esc(a.tel || '')}${keys[a.id] ? '' : ' · <b>clé absente sur cet appareil</b>'}</div>
-        <div class="row" style="margin-top:8px"><button data-act="link" data-id="${a.id}">Lien d'activation</button>${a.role === 'agent' ? `<button data-act="badge" data-id="${a.id}">Badge</button>` : ''}<button data-act="rekey" data-id="${a.id}">Nouvelle clé</button><button data-act="toggleagent" data-id="${a.id}">${a.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun agent.</p></div>'}`;
+      ${D.agents.map(a => `<div class="card"><div class="row"><h3 class="grow">${esc(a.nom)}</h3><span class="chip">${a.role === 'superviseur' ? 'Superviseur' : 'Agent'}</span>${a.actif === false ? '<span class="chip bad">inactif</span>' : ''}</div><div class="sub">${esc(a.id)} · ${esc(a.tel || '')}${(FI[a.id] || {}).poste ? ' · ' + esc((POSTES.find(p => p[0] === FI[a.id].poste) || [0, ''])[1]) : ''}${keys[a.id] ? '' : ' · <b>clé absente sur cet appareil</b>'}</div>
+        <div class="row" style="margin-top:8px"><button data-act="editagent" data-id="${a.id}">Fiche</button><button data-act="link" data-id="${a.id}">Lien d'activation</button>${a.role === 'agent' ? `<button data-act="badge" data-id="${a.id}">Badge</button>` : ''}<button data-act="rekey" data-id="${a.id}">Nouvelle clé</button><button data-act="toggleagent" data-id="${a.id}">${a.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun agent.</p></div>'}`;
+  }
+  const siteOf = c => D.sites.find(s => s.clientRef === c.ref);
+  function clientsCard() {
+    if (!CL || !CL.clients.length) return `<div class="card"><h3>Clients de SPC Gestion</h3><p class="sub">Aucun client reçu. Les fiches clients sont gérées dans <b>SPC Gestion</b> : ouvrez l'application de gestion (fichier local), Réglages, Pointages, puis <b>Envoyer les clients vers le central</b>.</p></div>`;
+    const miss = CL.clients.filter(c => !siteOf(c));
+    return `<div class="card"><div class="row"><h3 class="grow">Clients de SPC Gestion</h3><span class="chip">${CL.clients.length} client(s)</span></div><p class="sub">Reçus le ${new Date(CL.genere).toLocaleString('fr-FR')}. Les informations clients ne se modifient que dans SPC Gestion.</p>
+      ${CL.clients.map(c => { const s = siteOf(c), diff = s && (s.nom !== c.nom || (s.adresse || '') !== (c.adresse || ''));
+        return `<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><div class="grow"><b>${esc(c.nom)}</b> <span class="sub">${esc(c.ref)}</span><div class="sub">${esc(c.adresse || '')}</div></div>${s ? (diff ? `<span class="chip warn">Différent de SPC Gestion</span><button data-act="syncsite" data-id="${s.id}">Mettre à jour</button>` : '<span class="chip ok">Lieu créé</span>') : `<span class="chip warn">Sans lieu</span><button class="primary" data-act="sitefromclient" data-ref="${esc(c.ref)}">Créer le lieu</button>`}</div>`; }).join('')}
+      ${miss.length ? `<div class="row" style="margin-top:8px"><button class="primary" data-act="sitesfromclients">Créer les ${miss.length} lieu(x) manquant(s)</button></div>` : ''}</div>`;
+  }
+  async function createSiteFromClient(c) {
+    const s = { id: 'S-' + SPC.uid().slice(0, 8), nom: c.nom, adresse: c.adresse || '', clientRef: c.ref, lat: null, lon: null, superviseurId: '', actif: true, qrVersion: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    s.qrHash = await SPC.qrHash(s.id, await siteCode(s)); D.sites.push(s); await SPC.queueFile(db, 'sites/' + s.id + '.json', s, 'create'); return s;
   }
   function sitesView() {
-    return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newsite">Nouveau lieu</button><button data-act="posterall">Imprimer tous les codes</button></div>
+    return clientsCard() + `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newsite">Nouveau lieu</button><button data-act="posterall">Imprimer tous les codes</button></div>
       ${D.sites.map(s => `<div class="card"><div class="row"><h3 class="grow">${esc(s.nom)}</h3>${s.qrHash ? '<span class="chip ok">QR actif</span>' : '<span class="chip warn">QR en préparation</span>'}${s.actif === false ? '<span class="chip bad">inactif</span>' : ''}</div><div class="sub">${esc(s.adresse || '')} · client ${esc(s.clientRef || '-')}</div><div class="sub">${s.lat != null && s.lat !== '' ? 'Coordonnées : ' + s.lat + ', ' + s.lon + ' (information)' : 'Coordonnées non renseignées (facultatif)'}</div><div class="row" style="margin-top:8px"><button class="primary" data-act="qr" data-id="${s.id}">Code QR</button>${s.lat != null && s.lat !== '' ? `<a class="btn" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=${s.lat}&mlon=${s.lon}#map=18/${s.lat}/${s.lon}">Carte</a>` : ''}<button data-act="editsite" data-id="${s.id}">Modifier</button><button data-act="togglesite" data-id="${s.id}">${s.actif === false ? 'Réactiver' : 'Désactiver'}</button></div></div>`).join('') || '<div class="card"><p class="sub">Aucun lieu. Créez un lieu : son code QR est généré tout de suite.</p></div>'}`;
   }
+  const plState = p => { const ag = D.agents.find(a => a.id === p.agentCode), st = D.sites.find(s => s.clientRef === p.clientRef), ex = D.assignments.find(x => x.affRef === p.ref);
+    if (!ag) return { k: 'agent', l: 'Agent non enregistré', c: 'bad' }; if (!st) return { k: 'site', l: 'Lieu manquant : créez le lieu du client', c: 'warn' }; if (!ex) return { k: 'new', l: 'À créer', c: 'warn', ag, st };
+    const same = JSON.stringify(ex.jours) === JSON.stringify(p.jours) && ex.debut === p.debut && ex.fin === p.fin && (ex.du || '') === (p.du || '') && ex.siteId === st.id && ex.agentId === ag.id;
+    return same ? { k: 'ok', l: 'En place', c: 'ok', ag, st, ex } : { k: 'diff', l: 'Différent de SPC Gestion', c: 'warn', ag, st, ex }; };
+  function plCard() {
+    if (!PL || !PL.plannings.length) return `<div class="card"><h3>Plannings proposés par SPC Gestion</h3><p class="sub">Aucun planning reçu. SPC Gestion prépare les plannings à partir de ses affectations : menu Robot opérationnel, Planification, bouton Envoyer les plannings au central.</p></div>`;
+    const todo = PL.plannings.filter(p => ['new', 'diff'].includes(plState(p).k));
+    return `<div class="card"><div class="row"><h3 class="grow">Plannings proposés par SPC Gestion</h3><span class="chip">${PL.plannings.length}</span></div><p class="sub">Reçus le ${new Date(PL.genere).toLocaleString('fr-FR')}. Source : les affectations de SPC Gestion.</p>
+      ${PL.plannings.map(p => { const s = plState(p); return `<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><div class="grow"><b>${esc(p.agentNom || p.agentCode)}</b> <span class="sub">${esc(p.agentCode)}</span> chez <b>${esc(p.clientNom || p.clientRef)}</b><div class="sub">${(p.jours || []).map(j => SPC.JOURS[j - 1]).join(' ')} · ${esc(p.debut)} à ${esc(p.fin)} · à partir du ${esc(p.du || '-')}</div></div><span class="chip ${s.c}">${s.l}</span>${['new', 'diff'].includes(s.k) ? `<button class="primary" data-act="applypl" data-ref="${esc(p.ref)}">${s.k === 'new' ? 'Appliquer' : 'Mettre à jour'}</button>` : ''}</div>`; }).join('')}
+      ${todo.length ? `<div class="row" style="margin-top:8px"><button class="primary" data-act="applyplall">Appliquer les ${todo.length} planning(s)</button></div>` : ''}</div>`;
+  }
+  async function applyPlanning(p) {
+    const s = plState(p); if (!['new', 'diff'].includes(s.k)) return false;
+    const a = Object.assign({}, s.ex || {}, { id: s.ex ? s.ex.id : 'AFF-' + SPC.uid().slice(0, 8), agentId: s.ag.id, siteId: s.st.id, jours: p.jours, debut: p.debut, fin: p.fin, du: p.du || '', au: p.au || '', actif: true, source: 'gestion', affRef: p.ref });
+    D.assignments = D.assignments.filter(x => x.id !== a.id).concat(a); await SPC.queueFile(db, 'assignments/' + a.id + '.json', a, s.ex ? 'replace' : 'create'); return true;
+  }
   function assignView() {
-    return `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newasg">Nouvelle affectation</button></div>
+    return plCard() + `<div class="row" style="margin-bottom:10px"><button class="primary grow" data-act="newasg">Nouvelle affectation</button></div>
       <div class="card scroll"><table><thead><tr><th>Agent</th><th>Lieu</th><th>Jours</th><th>Horaires</th><th>Période</th><th></th></tr></thead><tbody>${D.assignments.map(a => `<tr><td>${esc(agentName(a.agentId))}</td><td>${esc(site(a.siteId).nom || a.siteId)}</td><td>${(a.jours || []).map(j => SPC.JOURS[j - 1]).join(' ')}</td><td>${esc(a.debut || '')} à ${esc(a.fin || '')}</td><td>${esc(a.du || '')} ${a.au ? '→ ' + esc(a.au) : ''}</td><td><button data-act="editasg" data-id="${a.id}">Modifier</button></td></tr>`).join('') || '<tr><td colspan="6" class="sub">Aucune affectation.</td></tr>'}</tbody></table></div>`;
   }
   function settingsView() {
     return `<div class="card"><h2>Connexion au dépôt de données</h2><p class="sub">${cfg ? esc(cfg.repo) + ' · branche ' + esc(cfg.branch) : ''}</p>
       <p class="sub">Dernière synchronisation : ${lastSync ? new Date(lastSync).toLocaleString('fr-FR') : 'jamais'}${pending ? ` · ${pending} modification(s) à envoyer` : ''}${lastErr ? ' · ' + esc(lastErr) : ''}</p>
       <div class="row"><button class="primary" data-act="reload">Synchroniser</button><button data-act="config">Modifier la connexion</button></div></div>
+      <div class="card"><h3>Clé d'échange avec SPC Gestion</h3><p class="sub">Cette clé chiffre la fiche du personnel (identité, adresse, CNSS, garants), la liste des clients et les plannings dans le dépôt : les téléphones de terrain peuvent lire le dépôt mais pas ces fichiers. Copiez-la dans SPC Gestion (Réglages, Pointages). Gardez-la secrète : elle fait partie de la sauvegarde des clés.</p>
+        <label class="f">Clé d'échange<input id="xkeyshow" readonly value="${esc(XK)}"></label><div class="row"><button data-act="copyxkey">Copier la clé</button></div></div>
       <div class="card"><h3>Règles de calcul</h3><label class="f">Pause quotidienne déduite (heures, journée d'un seul tenant de 6 h ou plus)<input id="set_pause" type="number" step="0.5" min="0" value="${settings().pause}"></label><label class="f"><span><input id="set_auto" type="checkbox"${settings().autoExport === false ? '' : ' checked'}> Publier automatiquement les pointages vers l'application de gestion</span></label><label class="f">Tolérance de retard (minutes)<input id="set_retard" type="number" min="0" value="${settings().retard}"></label><label class="f">Alerte si le scan est à plus de ... mètres du lieu (0 = désactivée, utile seulement si les coordonnées du lieu sont fiables)<input id="set_gps" type="number" min="0" value="${settings().gpsAlert}"></label><button data-act="saveset">Enregistrer</button></div>
       <div class="card"><h3>Sauvegarde des clés de signature</h3><p class="sub">Les clés ne sont stockées que sur cet appareil (jamais sur GitHub). Sans elles, les signatures des pointages ne peuvent plus être vérifiées. Exportez-les et gardez le fichier en lieu sûr.</p><div class="row"><button data-act="exportkeys">Exporter les clés</button><label class="btn">Importer des clés<input type="file" id="keyfile" accept=".json" style="display:none"></label></div></div>`;
   }
@@ -229,17 +285,34 @@
     modal(`<h3>Lien d'activation de ${esc(a.nom)}</h3><p class="sub">À envoyer uniquement à cette personne : il contient la clé de son appareil.</p><label class="f">Lien<textarea id="lk" rows="5" readonly>${esc(link)}</textarea></label>
       <div class="row"><button class="primary grow" data-act="copy">Copier</button><a class="btn grow" style="text-align:center" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">Envoyer par WhatsApp</a></div><button data-act="close" style="width:100%;margin-top:8px">Fermer</button>`);
   }
-  function agentForm() {
-    modal(`<h3>Nouvel utilisateur</h3><label class="f">Nom et prénom<input id="a_nom"></label><label class="f">Téléphone<input id="a_tel"></label><label class="f">Rôle<select id="a_role"><option value="agent">Agent</option><option value="superviseur">Superviseur</option></select></label>
-      <div class="row"><button class="primary grow" data-act="saveagent">Créer</button><button data-act="close">Annuler</button></div>`);
+  const POSTES = [['', 'Non précisé'], ['menage', 'Femme de Ménage'], ['nounou_std', 'Nounou Standard (1 à 2 enfants)'], ['nounou_int', 'Nounou Interne / Logée'], ['nounou_menage', 'Nounou & Ménage (Polyvalente)'], ['elite', 'Profil Élite / VIP'], ['autre', 'Autre poste']];
+  function agentForm(a) {
+    const f = a ? (FI[a.id] || { nom: a.nom }) : {}, g = f.garants || [];
+    modal(`<h3>${a ? 'Fiche de ' + esc(a.nom) : 'Nouvel employé ou utilisateur'}</h3><p class="sub">Toutes ces informations sont transmises (chiffrées) à SPC Gestion pour le suivi du personnel.</p>
+      <label class="f">Rôle<select id="a_role"${a ? ' disabled' : ''}><option value="agent"${a && a.role === 'agent' ? ' selected' : ''}>Agent de terrain</option><option value="superviseur"${a && a.role === 'superviseur' ? ' selected' : ''}>Superviseur, chef d'équipe</option></select></label>
+      <div class="row"><label class="f grow">Prénoms<input id="a_prenoms" value="${esc(f.prenoms || '')}"></label><label class="f grow">Nom<input id="a_nom" value="${esc(f.nom || '')}"></label></div>
+      <div class="row"><label class="f grow">Date de naissance<input id="a_naiss" type="date" value="${esc(f.naissance || '')}"></label><label class="f grow">Téléphone<input id="a_tel" value="${esc(a ? a.tel || '' : '')}"></label></div>
+      <label class="f">Adresse<input id="a_adr" value="${esc(f.adresse || '')}"></label>
+      <div class="row"><label class="f grow">Pièce d'identité (type et numéro)<input id="a_piece" value="${esc(f.piece || '')}"></label><label class="f grow">N° CNSS<input id="a_cnss" value="${esc(f.cnss || '')}"></label></div>
+      <label class="f">Poste ou profil<select id="a_poste">${POSTES.map(([k, l]) => `<option value="${k}"${(f.poste || '') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      ${[0, 1].map(i => `<div class="row"><label class="f grow">Garant ${i + 1} : nom<input id="a_g${i}n" value="${esc((g[i] || {}).nom || '')}"></label><label class="f grow">Téléphone<input id="a_g${i}t" value="${esc((g[i] || {}).tel || '')}"></label><label class="f grow">Lien<input id="a_g${i}l" value="${esc((g[i] || {}).lien || '')}"></label></div>`).join('')}
+      <label class="f">Notes<input id="a_notes" value="${esc(f.notes || '')}"></label>
+      <div class="row"><button class="primary grow" data-act="saveagent" data-id="${a ? a.id : ''}">Enregistrer</button><button data-act="close">Annuler</button></div>`);
   }
-  async function saveAgent() {
-    const nom = $('#a_nom').value.trim(); if (!nom) return toast('Indiquez le nom');
-    const role = $('#a_role').value, a = { id: nextId(D.agents, role === 'superviseur' ? 'SUP' : 'AGT'), nom, tel: $('#a_tel').value.trim(), role, actif: true, createdAt: new Date().toISOString(), badgeVersion: 1 };
-    keys[a.id] = [SPC.newKey()]; await db.set('kv', 'keys', keys); a.badgeHash = await SPC.badgeHash(a.id, await agentCode(a)); D.agents.push(a); closeModal(); await write('agents/' + a.id + '.json', a, 'create'); toast('Utilisateur créé : envoyez-lui son lien d\'activation'); showLink(a);
+  async function saveAgent(id) {
+    const prenoms = $('#a_prenoms').value.trim(), nomF = $('#a_nom').value.trim(), nom = (prenoms + ' ' + nomF).trim(); if (!nom) return toast('Indiquez le nom');
+    const fiche = { prenoms, nom: nomF, naissance: $('#a_naiss').value, adresse: $('#a_adr').value.trim(), piece: $('#a_piece').value.trim(), cnss: $('#a_cnss').value.trim(), poste: $('#a_poste').value === 'autre' ? '' : $('#a_poste').value, notes: $('#a_notes').value.trim(),
+      garants: [0, 1].map(i => ({ nom: $('#a_g' + i + 'n').value.trim(), tel: $('#a_g' + i + 't').value.trim(), lien: $('#a_g' + i + 'l').value.trim() })) };
+    const old = D.agents.find(x => x.id === id), role = old ? old.role : $('#a_role').value;
+    const a = old ? Object.assign(old, { nom, tel: $('#a_tel').value.trim() }) : { id: nextId(D.agents, role === 'superviseur' ? 'SUP' : 'AGT'), nom, tel: $('#a_tel').value.trim(), role, actif: true, createdAt: new Date().toISOString(), badgeVersion: 1 };
+    if (!old) { keys[a.id] = [SPC.newKey()]; await db.set('kv', 'keys', keys); a.badgeHash = await SPC.badgeHash(a.id, await agentCode(a)); D.agents.push(a); }
+    FI[a.id] = fiche; await db.set('kv', 'fiches', FI); closeModal();
+    try { await publishEmployes(true); } catch (e) { /* republié au prochain chargement */ }
+    await write('agents/' + a.id + '.json', a, old ? 'replace' : 'create');
+    if (old) toast('Fiche enregistrée et transmise à SPC Gestion'); else { toast('Utilisateur créé : envoyez-lui son lien d\'activation'); showLink(a); }
   }
   function siteForm(s) {
-    modal(`<h3>${s ? 'Modifier le lieu' : 'Nouveau lieu'}</h3><label class="f">Nom du lieu (client)<input id="s_nom" value="${esc(s ? s.nom : '')}"></label><label class="f">Adresse et repères<input id="s_adr" value="${esc(s ? s.adresse || '' : '')}"></label><label class="f">Référence client SPC (ex. CLI-2026-001)<input id="s_cli" value="${esc(s ? s.clientRef || '' : '')}"></label>
+    modal(`<h3>${s ? 'Modifier le lieu' : 'Nouveau lieu'}</h3>${CL && CL.clients.length ? `<label class="f">Client de SPC Gestion (remplit les champs ci-dessous)<select id="s_client"><option value="">Choisir un client...</option>${CL.clients.map(c => `<option value="${esc(c.ref)}">${esc(c.nom)} (${esc(c.ref)})</option>`).join('')}</select></label>` : ''}<label class="f">Nom du lieu (client)<input id="s_nom" value="${esc(s ? s.nom : '')}"></label><label class="f">Adresse et repères<input id="s_adr" value="${esc(s ? s.adresse || '' : '')}"></label><label class="f">Référence client SPC (ex. CLI-2026-001)<input id="s_cli" value="${esc(s ? s.clientRef || '' : '')}"></label>
       <p class="sub">Coordonnées GPS : facultatives, à titre d'information. Le pointage se fait par le code QR du lieu.</p>
       <div class="row"><label class="f grow">Latitude<input id="s_lat" type="number" step="any" value="${s && s.lat != null ? s.lat : ''}"></label><label class="f grow">Longitude<input id="s_lon" type="number" step="any" value="${s && s.lon != null ? s.lon : ''}"></label></div>
       <label class="f">Superviseur responsable<select id="s_sup"><option value="">Aucun</option>${D.agents.filter(a => a.role === 'superviseur').map(a => `<option value="${a.id}"${s && s.superviseurId === a.id ? ' selected' : ''}>${esc(a.nom)}</option>`).join('')}</select></label>
@@ -310,6 +383,7 @@
   function download(name, text, type) { const u = URL.createObjectURL(new Blob([text], { type })); const a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 2000); }
 
   document.addEventListener('change', async e => {
+    if (e.target.id === 's_client') { const c = CL && CL.clients.find(x => x.ref === e.target.value); if (c) { $('#s_nom').value = c.nom; $('#s_adr').value = c.adresse || ''; $('#s_cli').value = c.ref; } }
     if (e.target.id === 'day') { day = e.target.value || SPC.localDate(); render(); }
     if (e.target.id === 'month') { month = e.target.value || month; counts().then(render); }
     if (e.target.id === 'keyfile' && e.target.files[0]) { try { const j = JSON.parse(await e.target.files[0].text()); for (const [k, v] of Object.entries(j)) keys[k] = Array.from(new Set((keys[k] || []).concat(v))); await db.set('kv', 'keys', keys); await verify(); render(); toast('Clés importées'); } catch (er) { toast('Fichier de clés invalide'); } }
@@ -320,7 +394,8 @@
       case 'tab': tab = d.tab; render(); break;
       case 'close': closeModal(); break;
       case 'reload': load(); break;
-      case 'publish': { const ok = await publishExport(month, true); if (ok) { try { await SPC.sync(db, cfg); } catch (er) { /* hors connexion : parti plus tard */ } } await counts(); render(); toast(ok ? (navigator.onLine ? 'Publié dans le dépôt' : 'Enregistré : sera envoyé au retour de la connexion') : 'Rien à publier'); break; }
+      case 'copyxkey': try { await navigator.clipboard.writeText(XK); toast('Clé copiée'); } catch (er) { $('#xkeyshow').select(); toast('Sélectionnée : copiez-la avec Ctrl + C'); } break;
+      case 'publish': { const pe = await publishEmployes(true), pp = await publishExport(month, true), ok = pe || pp; if (ok) { try { await SPC.sync(db, cfg); } catch (er) { /* hors connexion : parti plus tard */ } } await counts(); render(); toast(ok ? (navigator.onLine ? 'Publié dans le dépôt' : 'Enregistré : sera envoyé au retour de la connexion') : 'Rien à publier'); break; }
       case 'saveconfig': {
         const repo = $('#c_repo').value.trim(), token = $('#c_token').value.trim(), dt = $('#c_dtoken').value.trim();
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !token || !dt) return toast('Renseignez le dépôt et les deux jetons');
@@ -328,12 +403,18 @@
       }
       case 'config': if (confirm('Modifier la connexion ? Les clés de signature sont conservées.')) { const old = cfg; cfg = null; render(); $('#c_repo').value = old.repo; $('#c_branch').value = old.branch; $('#c_api').value = old.apiBase || ''; } break;
       case 'saveset': cfg.settings = { pause: +$('#set_pause').value || 0, retard: +$('#set_retard').value || 0, gpsAlert: +$('#set_gps').value || 0, autoExport: $('#set_auto').checked }; await verify(); await db.set('kv', 'cfg', cfg); render(); toast('Règles enregistrées'); break;
+      case 'applypl': { const p = PL.plannings.find(x => x.ref === d.ref); if (p && await applyPlanning(p)) { await counts(); render(); load(); toast('Planning appliqué'); } break; }
+      case 'applyplall': { let n = 0; for (const p of PL.plannings) if (await applyPlanning(p)) n++; await counts(); render(); load(); toast(n + ' planning(s) appliqué(s)'); break; }
       case 'newagent': agentForm(); break;
-      case 'saveagent': saveAgent(); break;
+      case 'editagent': agentForm(D.agents.find(a => a.id === d.id)); break;
+      case 'saveagent': saveAgent(d.id); break;
       case 'link': showLink(D.agents.find(a => a.id === d.id)); break;
       case 'copy': { const t = $('#lk'); t.select(); try { await navigator.clipboard.writeText(t.value); } catch (er) { document.execCommand('copy'); } toast('Lien copié'); break; }
       case 'rekey': if (confirm("Générer une nouvelle clé ? L'ancien appareil ne pourra plus pointer tant qu'il n'est pas réactivé avec le nouveau lien. Les anciens pointages restent vérifiables.")) { keys[d.id] = (keys[d.id] || []).concat(SPC.newKey()); await db.set('kv', 'keys', keys); showLink(D.agents.find(a => a.id === d.id)); } break;
       case 'toggleagent': { const a = D.agents.find(x => x.id === d.id); a.actif = a.actif === false; write('agents/' + a.id + '.json', a, 'replace'); break; }
+      case 'sitefromclient': { const c = CL.clients.find(x => x.ref === d.ref); if (c) { await createSiteFromClient(c); await counts(); render(); load(); toast('Lieu créé : imprimez son code QR'); } break; }
+      case 'sitesfromclients': { const l = CL.clients.filter(c => !siteOf(c)); for (const c of l) await createSiteFromClient(c); await counts(); render(); load(); toast(l.length + ' lieu(x) créé(s)'); break; }
+      case 'syncsite': { const s = D.sites.find(x => x.id === d.id), c = CL && CL.clients.find(x => x.ref === s.clientRef); if (s && c) { s.nom = c.nom; s.adresse = c.adresse || ''; s.updatedAt = new Date().toISOString(); await write('sites/' + s.id + '.json', s, 'replace'); toast('Lieu mis à jour depuis SPC Gestion'); } break; }
       case 'newsite': siteForm(null); break;
       case 'editsite': siteForm(D.sites.find(s => s.id === d.id)); break;
       case 'savesite': saveSite(d.id); break;

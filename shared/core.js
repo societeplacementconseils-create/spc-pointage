@@ -7,7 +7,7 @@
   const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
 
   /* ---------- encodage ---------- */
-  const b64uEnc = u8 => btoa(String.fromCharCode.apply(null, u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const b64uEnc = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
   const b64uDec = s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); };
   SPC.encJson = o => b64uEnc(te.encode(JSON.stringify(o)));
   SPC.decJson = s => JSON.parse(td.decode(b64uDec(s)));
@@ -60,6 +60,17 @@
     return hex(await crypto.subtle.sign('HMAC', k, te.encode(msg)));
   };
   SPC.newKey = () => b64uEnc(crypto.getRandomValues(new Uint8Array(32)));
+  /* Fichiers d'échange chiffrés (AES-GCM, clé de 32 octets partagée par le central et SPC Gestion) :
+     les téléphones de terrain lisent le dépôt mais ne peuvent pas lire ces fichiers. */
+  SPC.xEncrypt = async (keyB64u, obj) => {
+    const key = await crypto.subtle.importKey('raw', b64uDec(keyB64u), 'AES-GCM', false, ['encrypt']), iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, te.encode(JSON.stringify(obj))));
+    return { chiffre: true, iv: b64uEnc(iv), data: b64uEnc(ct) };
+  };
+  SPC.xDecrypt = async (keyB64u, env) => {
+    const key = await crypto.subtle.importKey('raw', b64uDec(keyB64u), 'AES-GCM', false, ['decrypt']);
+    return JSON.parse(td.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64uDec(env.iv) }, key, b64uDec(env.data))));
+  };
 
   /* ---------- géolocalisation ---------- */
   SPC.dist = (la1, lo1, la2, lo2) => {
