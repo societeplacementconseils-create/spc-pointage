@@ -214,6 +214,17 @@ try:
     asg=[json.loads(v) for k,v in dump().items() if k.startswith('assignments/')]; g=[a for a in asg if a.get('affRef')=='AFF-2026-001']
     check("« Appliquer » crée l'affectation de présence (agent, lieu, jours, horaires) marquée comme venant de SPC Gestion",len(g)==1 and g[0]['agentId']=='AGT-002' and g[0]['jours']==[1,2,3,4,5] and g[0]['debut']=='07:30' and g[0]['source']=='gestion',g)
     check("le planning appliqué passe à « En place » et l'agent inconnu reste signalé",'En place' in cp.inner_text('body') and 'Agent non enregistré' in cp.inner_text('body'))
+    # ---------- Clé d'échange : masquée par défaut, régénérable, anciens fichiers toujours lisibles ----------
+    cp.click('[data-act=tab][data-tab=set]'); cp.wait_for_timeout(300)
+    check("la clé d'échange est masquée par défaut et peut être affichée",cp.evaluate("document.getElementById('xkeyshow').type")=='password')
+    cp.click('[data-act=showxkey]'); check("« Afficher ou masquer » révèle la clé",cp.evaluate("document.getElementById('xkeyshow').type")=='text'); cp.click('[data-act=showxkey]')
+    old_xk=xk; cp.once('dialog',lambda d:d.accept()); cp.click('[data-act=regenx]'); cp.wait_for_timeout(3500)
+    new_xk=cp.evaluate("SPC.db('spc-central').get('kv','keys').then(k=>k.__echange[k.__echange.length-1])")
+    check("« Régénérer la clé » crée une nouvelle clé et conserve l'ancienne pour lire les anciens fichiers",new_xk!=old_xk and cp.evaluate("SPC.db('spc-central').get('kv','keys').then(k=>k.__echange.length)")==2)
+    env=json.loads(dump()['exports/employes.json']); ok_new=cp.evaluate("([k,e])=>SPC.xDecrypt(k,e).then(()=>true,()=>false)",[new_xk,env]); ok_old=cp.evaluate("([k,e])=>SPC.xDecrypt(k,e).then(()=>true,()=>false)",[old_xk,env])
+    check("la fiche du personnel est rechiffrée avec la nouvelle clé : l'ancienne ne la lit plus",ok_new is True and ok_old is False,(ok_new,ok_old))
+    cp.click('[data-act=tab][data-tab=day]'); cp.click('[data-act=reload]'); cp.wait_for_timeout(3000); cp.click('[data-act=tab][data-tab=sites]'); cp.wait_for_timeout(400)
+    check("les clients chiffrés avec l'ancienne clé restent lisibles par le central",'Entreprise Test SA' in cp.inner_text('body'))
     cc.set_offline(True); cp.reload(); cp.wait_for_timeout(1500); check('central consultable hors connexion','Fanta Camara' in cp.inner_text('body') or 'Jour' in cp.inner_text('body'))
     b.close()
 finally:

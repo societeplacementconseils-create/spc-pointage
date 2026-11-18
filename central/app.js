@@ -48,10 +48,13 @@
 
   /* ---------- échanges chiffrés avec SPC Gestion ---------- */
   async function xkey() { if (!keys.__echange || !keys.__echange.length) { keys.__echange = [SPC.newKey()]; await db.set('kv', 'keys', keys); } return keys.__echange[keys.__echange.length - 1]; }
+  /** Toutes les clés d'échange, de la plus récente à la plus ancienne : une clé remplacée reste utilisable pour lire les anciens fichiers. */
+  const xkeys = () => (keys.__echange || []).slice().reverse();
   async function readEnc(gh, path, fmt) {
     const f = await gh.get(path); if (!f || !f.json || f.json.format !== fmt) return null;
     if (!f.json.chiffre) return f.json;
-    try { return Object.assign({ format: fmt }, await SPC.xDecrypt(await xkey(), f.json)); } catch (e) { return null; }
+    for (const k of xkeys()) { try { return Object.assign({ format: fmt }, await SPC.xDecrypt(k, f.json)); } catch (e) { /* clé suivante */ } }
+    return null;
   }
 
   /* ---------- codes QR des lieux ---------- */
@@ -252,7 +255,7 @@
       <p class="sub">Dernière synchronisation : ${lastSync ? new Date(lastSync).toLocaleString('fr-FR') : 'jamais'}${pending ? ` · ${pending} modification(s) à envoyer` : ''}${lastErr ? ' · ' + esc(lastErr) : ''}</p>
       <div class="row"><button class="primary" data-act="reload">Synchroniser</button><button data-act="config">Modifier la connexion</button></div></div>
       <div class="card"><h3>Clé d'échange avec SPC Gestion</h3><p class="sub">Cette clé chiffre la fiche du personnel (identité, adresse, CNSS, garants), la liste des clients et les plannings dans le dépôt : les téléphones de terrain peuvent lire le dépôt mais pas ces fichiers. Copiez-la dans SPC Gestion (Réglages, Pointages). Gardez-la secrète : elle fait partie de la sauvegarde des clés.</p>
-        <label class="f">Clé d'échange<input id="xkeyshow" readonly value="${esc(XK)}"></label><div class="row"><button data-act="copyxkey">Copier la clé</button></div></div>
+        <label class="f">Clé d'échange (masquée par défaut)<input id="xkeyshow" type="password" readonly value="${esc(XK)}"></label><div class="row"><button data-act="copyxkey">Copier la clé</button><button data-act="showxkey">Afficher ou masquer</button><button class="danger" data-act="regenx">Régénérer la clé</button></div><p class="sub">Si la clé a été vue par une personne qui ne devrait pas la connaître (capture d'écran, message), régénérez-la puis copiez la nouvelle dans SPC Gestion.</p></div>
       <div class="card"><h3>Règles de calcul</h3><label class="f">Pause quotidienne déduite (heures, journée d'un seul tenant de 6 h ou plus)<input id="set_pause" type="number" step="0.5" min="0" value="${settings().pause}"></label><label class="f"><span><input id="set_auto" type="checkbox"${settings().autoExport === false ? '' : ' checked'}> Publier automatiquement les pointages vers l'application de gestion</span></label><label class="f">Tolérance de retard (minutes)<input id="set_retard" type="number" min="0" value="${settings().retard}"></label><label class="f">Alerte si le scan est à plus de ... mètres du lieu (0 = désactivée, utile seulement si les coordonnées du lieu sont fiables)<input id="set_gps" type="number" min="0" value="${settings().gpsAlert}"></label><button data-act="saveset">Enregistrer</button></div>
       <div class="card"><h3>Sauvegarde des clés de signature</h3><p class="sub">Les clés ne sont stockées que sur cet appareil (jamais sur GitHub). Sans elles, les signatures des pointages ne peuvent plus être vérifiées. Exportez-les et gardez le fichier en lieu sûr.</p><div class="row"><button data-act="exportkeys">Exporter les clés</button><label class="btn">Importer des clés<input type="file" id="keyfile" accept=".json" style="display:none"></label></div></div>`;
   }
@@ -394,6 +397,8 @@
       case 'tab': tab = d.tab; render(); break;
       case 'close': closeModal(); break;
       case 'reload': load(); break;
+      case 'showxkey': { const i = $('#xkeyshow'); i.type = i.type === 'password' ? 'text' : 'password'; break; }
+      case 'regenx': if (confirm("Régénérer la clé d'échange ? La fiche du personnel est rechiffrée tout de suite. SPC Gestion devra recevoir la nouvelle clé (Réglages, Pointages) et renverra les clients et les plannings.")) { keys.__echange.push(SPC.newKey()); await db.set('kv', 'keys', keys); XK = await xkey(); try { await publishEmployes(true); await SPC.sync(db, cfg); } catch (er) { /* republié au prochain chargement */ } await counts(); render(); toast("Nouvelle clé générée : copiez-la dans SPC Gestion"); } break;
       case 'copyxkey': try { await navigator.clipboard.writeText(XK); toast('Clé copiée'); } catch (er) { $('#xkeyshow').select(); toast('Sélectionnée : copiez-la avec Ctrl + C'); } break;
       case 'publish': { const pe = await publishEmployes(true), pp = await publishExport(month, true), ok = pe || pp; if (ok) { try { await SPC.sync(db, cfg); } catch (er) { /* hors connexion : parti plus tard */ } } await counts(); render(); toast(ok ? (navigator.onLine ? 'Publié dans le dépôt' : 'Enregistré : sera envoyé au retour de la connexion') : 'Rien à publier'); break; }
       case 'saveconfig': {
